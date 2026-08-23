@@ -1,0 +1,142 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@300;400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --color-primary: 37 99 235; /* Default Blue primary */
+    --color-primary-hover: 29 78 216;
+    --color-primary-ring: 59 130 246 / 0.3;
+
+    --bg-app: 249 250 251; /* gray-50 */
+    --bg-card: 255 255 255; /* white */
+    --bg-sidebar: 243 244 246; /* gray-100 */
+    --border-main: 229 231 235; /* gray-200 */
+    --text-main: 17 24 39; /* gray-900 */
+    --text-muted: 107 114 128; /* gray-500 */
+    --terminal-bg: 17 24 39; /* slate-900 */
+    --terminal-text: 243 244 246; /* gray-100 */
+  }
+
+  .dark {
+    --bg-app: 3 7 18; /* slate-950 */
+    --bg-card: 15 23 42; /* slate-900 */
+    --bg-sidebar: 9 15 31; /* custom deep blue-dark */
+    --border-main: 30 41 59 / 0.7; /* slate-800/70 */
+    --text-main: 243 244 246; /* gray-100 */
+    --text-muted: 148 163 184; /* slate-400 */
+    --terminal-bg: 2 6 23; /* custom pure black */
+    --terminal-text: 74 222 128; /* emerald-400 green */
+  }
+
+  body {
+    @apply antialiased font-sans transition-colors duration-300;
+    background-color: rgb(var(--bg-app));
+    color: rgb(var(--text-main));
+  }
+}
+
+@layer components {
+  /* Premium Glass panel styling */
+  .glass-panel {
+    @apply border backdrop-blur-md transition-all duration-300;
+    background-color: rgba(var(--bg-card), 0.75);
+    border-color: rgb(var(--border-main));
+  }
+
+  /* Card layouts */
+  .card-main {
+    @apply rounded-xl border p-5 transition-all duration-300;
+    background-color: rgb(var(--bg-card));
+    border-color: rgb(var(--border-main));
+  }
+
+  .card-hover {
+    @apply hover:translate-y-[-2px] hover:shadow-lg hover:shadow-primary/5;
+  }
+
+  /* Custom terminal scrollbars */
+  .scrollbar-terminal::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  .scrollbar-terminal::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.2);
+  }
+
+  .scrollbar-terminal::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.15);
+    border-radius: 4px;
+  }
+
+  .scrollbar-terminal::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.3);
+  }
+
+  /* Subgrid animation effects for dashboard visual connections */
+  .flowline-vertical {
+    background: linear-gradient(180deg, transparent, rgb(var(--color-primary)) 50%, transparent);
+    background-size: 100% 200%;
+    animation: flowLine 2.5s linear infinite;
+  }
+
+  .flowline-horizontal {
+    background: linear-gradient(90deg, transparent, rgb(var(--color-primary)) 50%, transparent);
+    background-size: 200% 100%;
+    animation: flowLineHorizontal 2.5s linear infinite;
+  }
+}
+
+@keyframes flowLine {
+  0% {
+    background-position: 0% 0%;
+  }
+  100% {
+    background-position: 0% -200%;
+  }
+}
+
+@keyframes flowLineHorizontal {
+  0% {
+    background-position: 200% 0%;
+  }
+  100% {
+    background-position: 0% 0%;
+  }
+}
+
+/* Custom interactive classes */
+.focus-ring {
+  @apply focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary;
+}
+
+/* Dot loaders */
+.dot-typing {
+  position: relative;
+  left: -9999px;
+  width: 6px;
+  height: 6px;
+  border-radius: 5px;
+  background-color: rgb(var(--color-primary));
+  color: rgb(var(--color-primary));
+  box-shadow: 9999px 0 0 0 rgb(var(--color-primary)), 9999px 0 0 2px rgb(var(--color-primary)), 9999px 0 0 4px rgb(var(--color-primary));
+  animation: dotTyping 1.5s infinite linear;
+}
+
+@keyframes dotTyping {
+  0% {
+    box-shadow: 9999px 0 0 0 rgba(var(--color-primary), 0.2), 9999px 10px 0 0 rgba(var(--color-primary), 0.2), 9999px 20px 0 0 rgba(var(--color-primary), 0.2);
+  }
+  33.333% {
+    box-shadow: 9999px 0 0 0 rgb(var(--color-primary)), 9999px 10px 0 0 rgba(var(--color-primary), 0.2), 9999px 20px 0 0 rgba(var(--color-primary), 0.2);
+  }
+  66.667% {
+    box-shadow: 9999px 0 0 0 rgba(var(--color-primary), 0.2), 9999px 0 0 0 rgb(var(--color-primary)), 9999px 10px 0 0 rgba(var(--color-primary), 0.2);
+  }
+  100% {
+    box-shadow: 9999px 0 0 0 rgba(var(--color-primary), 0.2), 9999px 0 0 0 rgba(var(--color-primary), 0.2), 9999px 0 0 0 rgb(var(--color-primary));
+  }
+}
