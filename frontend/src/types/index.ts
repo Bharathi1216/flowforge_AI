@@ -8,22 +8,21 @@ export interface User {
 }
 
 export type RepositoryRole = 'owner' | 'maintainer' | 'developer' | 'contributor' | 'viewer';
-export type WorkflowStatus = 'success' | 'failed' | 'running' | 'warning';
+export type WorkflowStatus = 'success' | 'failed' | 'running' | 'warning' | 'unknown';
 
 export interface Repository {
   id: string;
   name: string;
   owner: string;
-  description: string;
-  language: string;
+  description: string | null;
+  language: string | null;
   isPrivate: boolean;
   lastWorkflowStatus: WorkflowStatus;
   lastUpdated: string;
   contributorCount: number;
   openDiscussionsCount: number;
   failureCount: number;
-  healthScore: number;
-  successRate: number;
+  successRate: number | null;
   userAccessRole: RepositoryRole;
 }
 
@@ -36,6 +35,7 @@ export interface Collaborator {
   lastActivity: string;
   issuesResolved: number;
   failuresFixed: number;
+  permissions?: Record<string, boolean>;
 }
 
 export interface Workflow {
@@ -45,22 +45,42 @@ export interface Workflow {
   status: 'active' | 'inactive';
 }
 
+export interface WorkflowStep {
+  name: string;
+  status: 'success' | 'failed' | 'skipped' | 'running';
+  duration: string;
+}
+
+export interface DiagnosticInfo {
+  errorType?: string;
+  frequency?: number;
+  errorSnippet?: string;
+  aiExplanation?: string;
+  rootCause?: string;
+  suggestedFix?: string;
+}
+
 export interface WorkflowRun {
   id: string;
-  workflowId: string;
+  workflowId?: string;
+  repoId?: string;
   name: string;
   runNumber: number;
   status: WorkflowStatus;
-  event: string;
-  triggeredBy: User;
+  event?: string;
+  triggeredBy?: User;
   branch: string;
-  commitSha: string;
+  commitSha?: string;
   commitMessage: string;
-  durationSeconds: number;
-  startedAt: string;
+  durationSeconds?: number;
+  duration?: string;
+  startedAt?: string;
+  timestamp?: string;
   completedAt?: string;
   failureSummary?: string;
   logsAnalysed?: boolean;
+  steps?: WorkflowStep[];
+  diagnosticInfo?: DiagnosticInfo;
 }
 
 export interface LogLine {
@@ -80,7 +100,7 @@ export interface FailureAnalysis {
   suggestedFix: string;
   similarPreviousRunId?: string;
   similarPreviousRunNumber?: number;
-  confidence: number; // e.g. 92 for 92%
+  confidence: number;
   relevantDocs: { title: string; url: string }[];
   previousDiscussions: { id: string; title: string }[];
 }
@@ -89,12 +109,16 @@ export interface Discussion {
   id: string;
   repoId: string;
   runId?: string;
+  workflowRunId?: string;
   runNumber?: number;
   title: string;
+  content?: string;
   author: User;
-  status: 'open' | 'resolved';
-  createdAt: string;
-  updatedAt: string;
+  status?: 'open' | 'resolved';
+  isPinned?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+  timestamp?: string;
   participants: User[];
   commentsCount: number;
 }
@@ -104,7 +128,8 @@ export interface Comment {
   discussionId: string;
   author: User;
   content: string;
-  createdAt: string;
+  createdAt?: string;
+  timestamp?: string;
   isAISuggestion?: boolean;
   logExcerpt?: string;
 }
@@ -157,5 +182,5 @@ export interface AIMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp: string;
-  sources?: string[]; // e.g. ["Workflow #184", "README.md"]
+  sources?: string[];
 }

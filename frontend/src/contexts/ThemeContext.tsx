@@ -8,6 +8,7 @@ interface ThemeContextType {
   accent: Accent;
   setTheme: (theme: Theme) => void;
   setAccent: (accent: Accent) => void;
+  toggleTheme: () => void;
 }
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
@@ -37,7 +38,7 @@ const accentColors: Record<Accent, { primary: string; hover: string; ring: strin
 
 export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [theme, setThemeState] = useState<Theme>(() => {
-    return (localStorage.getItem('flowforge-theme') as Theme) || 'system';
+    return (localStorage.getItem('flowforge-theme') as Theme) || 'dark';
   });
 
   const [accent, setAccentState] = useState<Accent>(() => {
@@ -52,6 +53,11 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const setAccent = (newAccent: Accent) => {
     localStorage.setItem('flowforge-accent', newAccent);
     setAccentState(newAccent);
+  };
+
+  const toggleTheme = () => {
+    const nextTheme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(nextTheme);
   };
 
   // Effect to apply theme class
@@ -92,7 +98,7 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, [accent]);
 
   return (
-    <ThemeContext.Provider value={{ theme, accent, setTheme, setAccent }}>
+    <ThemeContext.Provider value={{ theme, accent, setTheme, setAccent, toggleTheme }}>
       {children}
     </ThemeContext.Provider>
   );

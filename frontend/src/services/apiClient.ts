@@ -1,8 +1,5 @@
 import axios from 'axios';
 
-// Toggle this flag to switch between Mock and Real Backend API
-export const USE_MOCK_DATA = true;
-
 const apiClient = axios.create({
   baseURL: import.meta.env.VITE_API_URL || '/api',
   headers: {

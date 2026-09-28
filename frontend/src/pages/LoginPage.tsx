@@ -1,21 +1,11 @@
-import React, { useState, useEffect } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Info, ShieldCheck } from 'lucide-react';
+import React, { useState } from 'react';
+import { ShieldCheck } from 'lucide-react';
 import { authService } from '../services/authService';
 import { GithubIcon } from '../components/GithubIcon';
 
 export const LoginPage: React.FC = () => {
-  const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // Auto-login if demo parameter is present
-  useEffect(() => {
-    if (searchParams.get('demo') === 'true') {
-      handleDemoLogin();
-    }
-  }, [searchParams]);
 
   const handleGithubLogin = async () => {
     setLoading(true);
@@ -23,7 +13,7 @@ export const LoginPage: React.FC = () => {
     try {
       const response = await authService.loginWithGitHub();
       if (response && response.redirectUrl) {
-        navigate(response.redirectUrl);
+        window.location.assign(response.redirectUrl);
       } else {
         setError('OAuth redirection failed.');
       }
@@ -32,15 +22,6 @@ export const LoginPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleDemoLogin = () => {
-    setLoading(true);
-    // Simulate slight loader delay for micro-interactions
-    setTimeout(() => {
-      navigate('/dashboard');
-      setLoading(false);
-    }, 800);
   };
 
   return (
@@ -78,14 +59,6 @@ export const LoginPage: React.FC = () => {
               {loading ? 'Connecting...' : 'Continue with GitHub'}
             </button>
 
-            {/* Demo mode login */}
-            <button
-              onClick={handleDemoLogin}
-              disabled={loading}
-              className="flex w-full items-center justify-center gap-3 rounded-xl border border-slate-800 bg-slate-950/50 hover:bg-slate-900 px-5 py-3.5 text-sm font-bold text-slate-300 disabled:opacity-75 transition-all"
-            >
-              Explore as Demo User
-            </button>
           </div>
 
           <div className="flex items-start gap-2.5 rounded-lg bg-slate-950/40 border border-slate-800/60 p-3 text-[10px] text-slate-500">

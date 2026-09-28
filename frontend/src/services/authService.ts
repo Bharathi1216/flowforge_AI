@@ -1,29 +1,21 @@
-import apiClient, { USE_MOCK_DATA } from './apiClient';
 import { User } from '../types';
-import { mockCurrentUser } from '../mock/data';
+import apiClient from './apiClient';
 
 export const authService = {
   async loginWithGitHub(): Promise<{ redirectUrl: string } | null> {
-    if (USE_MOCK_DATA) {
-      // Simulate OAuth redirect or session resolution
-      return { redirectUrl: '/dashboard' };
-    }
-    const response = await apiClient.get('/auth/github/url');
-    return response.data;
+    return { redirectUrl: `${import.meta.env.VITE_API_URL || '/api'}/auth/github/login` };
   },
 
   async getCurrentUser(): Promise<User | null> {
-    if (USE_MOCK_DATA) {
-      return Promise.resolve(mockCurrentUser);
+    try {
+      const response = await apiClient.get<User>('/auth/me');
+      return response.data;
+    } catch {
+      return null;
     }
-    const response = await apiClient.get('/auth/me');
-    return response.data;
   },
 
   async logout(): Promise<void> {
-    if (USE_MOCK_DATA) {
-      return Promise.resolve();
-    }
     await apiClient.post('/auth/logout');
   }
 };

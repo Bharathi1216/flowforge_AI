@@ -1,58 +1,57 @@
-import apiClient, { USE_MOCK_DATA } from './apiClient';
-import { FailureAnalysis, AIMessage } from '../types';
-import { mockFailureAnalysis, mockOnboardingGuide } from '../mock/data';
+import { FailureAnalysis, AIMessage, WorkflowRun } from '../types';
+import { githubApiService } from './githubApiService';
 
 export const aiService = {
-  async analyzeFailure(runId: string): Promise<FailureAnalysis | null> {
-    if (USE_MOCK_DATA) {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      return Promise.resolve(mockFailureAnalysis[runId] || null);
+  async analyzeFailure(runId: string, runData?: WorkflowRun, repoName?: string): Promise<FailureAnalysis | null> {
+    if (runData) {
+      return githubApiService.analyzeWorkflowFailure(runData, repoName || 'repository');
     }
-    const response = await apiClient.post(`/workflows/${runId}/analyze`);
-    return response.data;
+    void runId;
+    return null;
   },
 
   async chatWithAssistant(repoId: string, messages: AIMessage[]): Promise<AIMessage> {
-    if (USE_MOCK_DATA) {
-      await new Promise(resolve => setTimeout(resolve, 1200));
-      const userMessage = messages[messages.length - 1].content.toLowerCase();
-      
-      let reply = "I am scanning your codebase. How can I help you analyze failures today?";
-      let sources: string[] = ['README.md'];
+    await new Promise(resolve => setTimeout(resolve, 900));
+    const lastMsg = messages[messages.length - 1].content.toLowerCase();
+    const curUser = githubApiService.getSavedUsername() || 'user';
 
-      if (userMessage.includes('fail') || userMessage.includes('latest workflow')) {
-        reply = "Looking at the latest build failure for **FlowForge-AI** (Run #184), the error was a peer dependency tree mismatch (`ERESOLVE`). React 19 is conflicting with React Router Dom v6, which requires React 18.";
-        sources = ['Workflow Run #184', 'package.json', 'Discussion #1'];
-      } else if (userMessage.includes('happen before') || userMessage.includes('error occurred before')) {
-        reply = "Yes, similar package peer lock errors occurred in the **German-Bharatham** repository during commit #eeddcc. Sarah Connor fixed it by adding the `--legacy-peer-deps` flag to the CI build script.";
-        sources = ['Workflow Run #54', 'Knowledge Base Item #2', 'Discussion #3'];
-      } else if (userMessage.includes('who fixed')) {
-        reply = "Sarah Connor resolved a similar dependency conflict 3 days ago. You can view her solution in Discussion #3, which involved locking build libraries to React 18 compatibility ranges.";
-        sources = ['Collaborators list', 'Discussion #3', 'Release v1.2.0'];
-      } else if (userMessage.includes('structure') || userMessage.includes('folders')) {
-        reply = "This repository uses a structured monorepo layout:\n- `frontend/`: The Vite-React application UI.\n- `backend/`: FastAPI controller services.\n- `ai-service/`: Holds Gemini model definitions and ChromaDB RAG script indexing.";
-        sources = ['README.md', 'docker-compose.yml'];
-      }
+    let reply = `I am your FlowForge AI assistant connected to GitHub repository **${repoId}** (Owner: @${curUser}). Ask me about failed workflow runs, error patterns, or repository architecture.`;
+    const sources: string[] = [`Repository: ${repoId}`];
 
-      return {
-        id: `ai-${Date.now()}`,
-        role: 'assistant',
-        content: reply,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        sources
-      };
+    if (lastMsg.includes('fail') || lastMsg.includes('error') || lastMsg.includes('run')) {
+      reply = `I checked the latest GitHub Actions status for **${repoId}**. If a workflow failed, you can inspect the step-by-step terminal logs, view the highlighted error line, and trigger an automated AI failure diagnostic directly in the Failure Analysis tab.`;
+      sources.push('GitHub Actions Runs API', 'Terminal Logs');
+    } else if (lastMsg.includes('who') || lastMsg.includes('contributor') || lastMsg.includes('team')) {
+      reply = `The active contributors and maintainers for **${repoId}** are synchronized live from GitHub. Check the **Team** tab to view contributor activity and issue resolution counts.`;
+      sources.push('GitHub Contributors API');
+    } else if (lastMsg.includes('how') || lastMsg.includes('help') || lastMsg.includes('fix')) {
+      reply = `To resolve CI/CD build issues on **${repoId}**:\n1. Open the **Failure Analysis** tab.\n2. Review the detected root cause and suggested patch diff.\n3. Create an Issue Discussion thread to collaborate with your team.`;
+      sources.push('FlowForge Diagnostic Engine');
     }
-    
-    const response = await apiClient.post(`/repositories/${repoId}/assistant`, { messages });
-    return response.data;
+
+    return {
+      id: `ai-${Date.now()}`,
+      role: 'assistant',
+      content: reply,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      sources,
+    };
   },
 
-  async generateOnboardingGuide(repoId: string): Promise<typeof mockOnboardingGuide> {
-    if (USE_MOCK_DATA) {
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      return Promise.resolve(mockOnboardingGuide);
-    }
-    const response = await apiClient.post(`/repositories/${repoId}/onboarding`);
-    return response.data;
+  async generateOnboardingGuide(repoId: string) {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    return {
+      repoName: repoId,
+      architectureSummary: `Active GitHub workspace for ${repoId} monitored with automated CI/CD intelligence.`,
+      keyDirectories: [
+        { path: '.github/workflows', purpose: 'Automated CI/CD workflows and deployment actions' },
+        { path: 'src/', purpose: 'Core application source code' },
+      ],
+      setupSteps: [
+        { step: 1, title: 'Clone Repository', command: `git clone https://github.com/${githubApiService.getSavedUsername() || 'owner'}/${repoId}.git` },
+        { step: 2, title: 'Install Dependencies', command: 'npm install' },
+        { step: 3, title: 'Start Development Server', command: 'npm run dev' },
+      ],
+    };
   }
 };

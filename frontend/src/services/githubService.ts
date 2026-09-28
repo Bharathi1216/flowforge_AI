@@ -1,5 +1,4 @@
-import apiClient, { USE_MOCK_DATA } from './apiClient';
-import { mockGithubRepositories } from '../mock/data';
+import { githubApiService } from './githubApiService';
 
 export interface GithubRepo {
   name: string;
@@ -12,35 +11,32 @@ export interface GithubRepo {
 
 export const githubService = {
   async getGithubRepositories(): Promise<GithubRepo[]> {
-    if (USE_MOCK_DATA) {
-      return Promise.resolve(mockGithubRepositories);
-    }
-    const response = await apiClient.get('/github/repositories');
-    return response.data;
+    const repos = await githubApiService.fetchRepositories();
+    const selected = githubApiService.getSelectedRepoNames();
+    
+    return repos.map(r => ({
+      name: r.name,
+      owner: r.owner,
+      isPrivate: r.isPrivate,
+      description: r.description || '',
+      language: r.language || '',
+      added: selected.length === 0 ? true : selected.includes(r.name),
+    }));
   },
 
   async connectGithubAccount(): Promise<void> {
-    if (USE_MOCK_DATA) {
-      return Promise.resolve();
-    }
-    await apiClient.post('/github/connect');
+    // Handled via AuthContext
   },
 
   async disconnectGithubAccount(): Promise<void> {
-    if (USE_MOCK_DATA) {
-      return Promise.resolve();
-    }
-    await apiClient.post('/github/disconnect');
+    githubApiService.logout();
   },
 
   async addRepositoryAccess(owner: string, name: string): Promise<void> {
-    if (USE_MOCK_DATA) {
-      const repo = mockGithubRepositories.find(r => r.owner === owner && r.name === name);
-      if (repo) {
-        repo.added = true;
-      }
-      return Promise.resolve();
+    const selected = githubApiService.getSelectedRepoNames();
+    if (!selected.includes(name)) {
+      selected.push(name);
+      githubApiService.saveSelectedRepoNames(selected);
     }
-    await apiClient.post(`/github/repositories/add`, { owner, name });
   }
 };

@@ -10,32 +10,34 @@ export const Repositories: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'healthy' | 'failing' | 'private'>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'passing' | 'failing' | 'private'>('all');
+
+  const fetchRepos = async (forceRefresh = false) => {
+    setLoading(true);
+    try {
+      const data = await repositoryService.getRepositories(forceRefresh);
+      setRepositories(data);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const fetchRepos = async () => {
-      try {
-        const data = await repositoryService.getRepositories();
-        setRepositories(data);
-      } catch (err) {
-        console.error(err);
-      } finally {
-        setLoading(false);
-      }
-    };
     fetchRepos();
   }, []);
 
   const filteredRepos = useMemo(() => {
     return repositories.filter(repo => {
       // Search matching
-      const matchesSearch = repo.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                            repo.description.toLowerCase().includes(searchQuery.toLowerCase());
+      const matchesSearch = repo.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                (repo.description || '').toLowerCase().includes(searchQuery.toLowerCase());
       
       if (!matchesSearch) return false;
 
       // Status filter
-      if (statusFilter === 'healthy') {
+      if (statusFilter === 'passing') {
         return repo.lastWorkflowStatus === 'success';
       }
       if (statusFilter === 'failing') {
@@ -132,14 +134,14 @@ export const Repositories: React.FC = () => {
               All
             </button>
             <button
-              onClick={() => setStatusFilter('healthy')}
+              onClick={() => setStatusFilter('passing')}
               className={`rounded-md px-3 py-1 text-xs font-semibold ${
-                statusFilter === 'healthy'
+                statusFilter === 'passing'
                   ? 'bg-white dark:bg-slate-800 shadow-sm text-slate-900 dark:text-white'
                   : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
               }`}
             >
-              Healthy
+              Passing
             </button>
             <button
               onClick={() => setStatusFilter('failing')}
@@ -187,6 +189,14 @@ export const Repositories: React.FC = () => {
             title="List view"
           >
             <List className="h-4 w-4" />
+          </button>
+          <div className="h-4 w-[1px] bg-slate-200 dark:bg-slate-800 my-auto" />
+          <button
+            onClick={() => fetchRepos(true)}
+            className="rounded-md p-1.5 text-slate-400 hover:text-primary transition-colors"
+            title="Sync with GitHub"
+          >
+            <RefreshCw className="h-4 w-4" />
           </button>
         </div>
       </div>

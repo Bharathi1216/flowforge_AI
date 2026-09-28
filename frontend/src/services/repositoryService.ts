@@ -1,33 +1,48 @@
-import apiClient, { USE_MOCK_DATA } from './apiClient';
 import { Repository } from '../types';
-import { mockRepositories } from '../mock/data';
+import apiClient from './apiClient';
+
+let cachedRepositories: Repository[] | null = null;
+let cacheTimestamp = 0;
+const CACHE_TTL_MS = 60 * 1000; // 60 seconds
 
 export const repositoryService = {
-  async getRepositories(): Promise<Repository[]> {
-    if (USE_MOCK_DATA) {
-      return Promise.resolve(mockRepositories);
+  async getRepositories(refresh = false): Promise<Repository[]> {
+    const now = Date.now();
+    if (!refresh && cachedRepositories && now - cacheTimestamp < CACHE_TTL_MS) {
+      return cachedRepositories;
     }
-    const response = await apiClient.get('/repositories');
+
+    const response = await apiClient.get<Repository[]>('/repositories', {
+      params: refresh ? { refresh: true } : undefined,
+    });
+    cachedRepositories = response.data;
+    cacheTimestamp = now;
     return response.data;
   },
 
   async getRepository(repoId: string): Promise<Repository | null> {
-    if (USE_MOCK_DATA) {
-      const repo = mockRepositories.find(r => r.id === repoId || r.name.toLowerCase() === repoId.toLowerCase());
-      return Promise.resolve(repo || null);
+    // 1. Fast path: check in-memory cache if available
+    if (cachedRepositories) {
+      const match = cachedRepositories.find(
+        (repo) => repo.id === repoId || repo.name === repoId
+      );
+      if (match) return match;
     }
-    const response = await apiClient.get(`/repositories/${repoId}`);
-    return response.data;
+
+    // 2. Fetch specific repository directly
+    try {
+      const response = await apiClient.get<Repository>(`/repositories/${encodeURIComponent(repoId)}`);
+      return response.data;
+    } catch {
+      // Fallback to full list if individual lookup fails
+      const repositories = await this.getRepositories();
+      return repositories.find((repo) => repo.id === repoId || repo.name === repoId) || null;
+    }
   },
 
-  async regenerateRepositorySummary(repoId: string): Promise<string> {
-    if (USE_MOCK_DATA) {
-      await new Promise(resolve => setTimeout(resolve, 1500)); // simulate AI generation time
-      return Promise.resolve(
-        `FlowForge AI generated description: ${repoId} is a workspace focused on solving key build dependencies, orchestrating test-coverage monitoring, and providing RAG context pipelines for code failures.`
-      );
-    }
-    const response = await apiClient.post(`/repositories/${repoId}/regenerate-summary`);
-    return response.data.summary;
-  }
+  clearCache() {
+    cachedRepositories = null;
+    cacheTimestamp = 0;
+  },
 };
+

@@ -1,23 +1,20 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { LandingPage } from './pages/LandingPage';
-import { LoginPage } from './pages/LoginPage';
 import { Dashboard } from './pages/Dashboard';
-import { Repositories } from './pages/Repositories';
 import { RepositoryWorkspace } from './pages/RepositoryWorkspace';
 import { Settings } from './pages/Settings';
 import { Activity } from './pages/Activity';
-import { Notifications } from './pages/Notifications';
 import { AppLayout } from './layouts/AppLayout';
 
 function App() {
   return (
     <Routes>
-      {/* Public Pages */}
+      {/* 1. Landing / Connect GitHub Screen (auth entry point) */}
       <Route path="/" element={<LandingPage />} />
-      <Route path="/login" element={<LoginPage />} />
+      <Route path="/login" element={<LandingPage />} />
       <Route path="/auth/github" element={<Navigate to="/dashboard" replace />} />
 
-      {/* App Workspace Pages wrapped in Sidebar Shell */}
+      {/* 2. Dashboard (List of connected repositories + Add repository modal) */}
       <Route
         path="/dashboard"
         element={
@@ -26,16 +23,8 @@ function App() {
           </AppLayout>
         }
       />
-      <Route
-        path="/repositories"
-        element={
-          <AppLayout>
-            <Repositories />
-          </AppLayout>
-        }
-      />
 
-      {/* Repository Workspaces & nested tabs */}
+      {/* 3. Repository Workspace (Overview, Workflows, Failure Analysis, Threads, Team, AI Assistant) */}
       <Route
         path="/repositories/:repoId"
         element={
@@ -61,25 +50,7 @@ function App() {
         }
       />
 
-      {/* Other Panel Views */}
-      <Route
-        path="/activity"
-        element={
-          <AppLayout>
-            <Activity />
-          </AppLayout>
-        }
-      />
-      <Route
-        path="/notifications"
-        element={
-          <AppLayout>
-            <Notifications />
-          </AppLayout>
-        }
-      />
-
-      {/* Settings Options */}
+      {/* 4. Settings (Account, Repository access, Notifications, Appearance) */}
       <Route
         path="/settings"
         element={
@@ -88,16 +59,11 @@ function App() {
           </AppLayout>
         }
       />
-      <Route
-        path="/settings/:tab"
-        element={
-          <AppLayout>
-            <Settings />
-          </AppLayout>
-        }
-      />
 
-      {/* Fallback Redirect */}
+      {/* Route fallbacks and legacy aliases redirecting to main 4 destinations */}
+      <Route path="/repositories" element={<Navigate to="/dashboard" replace />} />
+      <Route path="/activity" element={<AppLayout><Activity /></AppLayout>} />
+      <Route path="/notifications" element={<Navigate to="/dashboard" replace />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
