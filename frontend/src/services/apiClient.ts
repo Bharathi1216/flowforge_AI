@@ -12,8 +12,23 @@ const apiClient = axios.create({
 apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
-    // Professional error handling logging
-    console.error('API Service Error:', error.response?.data || error.message);
+    const requestUrl = error.config?.url as string | undefined;
+    const isSessionProbe = requestUrl?.endsWith('/auth/me');
+    if (!isSessionProbe) {
+      console.error('API Service Error:', error.response?.data || error.message);
+    }
+    const errorDetail = error.response?.data?.detail;
+    const isUnauthenticatedGuest = isSessionProbe && (error.response?.status === 401 && errorDetail === 'Not authenticated');
+    const isAuthExpired = !isUnauthenticatedGuest && (
+      error.response?.status === 401 || 
+      (typeof errorDetail === 'string' && errorDetail.toLowerCase().includes('expired'))
+    );
+
+    if (isAuthExpired && !requestUrl?.endsWith('/auth/logout')) {
+      window.dispatchEvent(new CustomEvent('flowforge:auth-expired', {
+        detail: typeof errorDetail === 'string' ? errorDetail : 'GitHub authorization has expired'
+      }));
+    }
     return Promise.reject(error);
   }
 );

@@ -1,0 +1,9 @@
+Category: failure
+Error Type: Build & Test Failure
+Suggested Fix: 1. Update the workflow file to install dependencies using the `--legacy-peer-deps` flag:
+```yaml
+- run: npm ci --legacy-peer-deps
+  # or
+- run: npm install --legacy-peer-deps
+```
+2. Alternatively, inspect `package.json` and adjust the `react` version or the conflicting package's version to ensure all peer dependencies are compatible

@@ -28,6 +28,7 @@ class Settings(BaseSettings):
 
     # Google Gemini AI Settings
     GEMINI_API_KEY: Optional[str] = os.getenv("GEMINI_API_KEY", "")
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 
     class Config:
         env_file = Path(__file__).resolve().parents[1] / ".env"

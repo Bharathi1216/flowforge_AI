@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import axios from 'axios';
+import { useParams, useNavigate } from 'react-router-dom';
 import { 
   AlertOctagon, MessageSquare, Play, Users, 
   RotateCw, RefreshCw, ArrowLeft,
-  CheckCircle2, MessageSquarePlus, Sparkles
+  CheckCircle2, Sparkles
 } from 'lucide-react';
 import { repositoryService } from '../services/repositoryService';
 import { workflowService } from '../services/workflowService';
@@ -21,8 +22,7 @@ import { useAIAssistant } from '../contexts/AIAssistantContext';
 export const RepositoryWorkspace: React.FC = () => {
   const { repoId, tab } = useParams<{ repoId: string; tab?: string }>();
   const navigate = useNavigate();
-  const location = useLocation();
-  const { success } = useToast();
+  const { success, error: showError } = useToast();
   const { openAssistant } = useAIAssistant();
 
 
@@ -41,10 +41,6 @@ export const RepositoryWorkspace: React.FC = () => {
   const [comments, setComments] = useState<Comment[]>([]);
   const [collaborators, setCollaborators] = useState<Collaborator[]>([]);
   
-  // Custom thread prefill state
-  const [initialThreadTitle, setInitialThreadTitle] = useState('');
-  const [initialThreadContent, setInitialThreadContent] = useState('');
-
   // Top header retry latest run state
   const [isRetryingLatest, setIsRetryingLatest] = useState(false);
 
@@ -80,7 +76,14 @@ export const RepositoryWorkspace: React.FC = () => {
 
           setDiscussions(discList);
           if (discList.length > 0) {
-            handleSelectDiscussion(discList[0]);
+            const firstDiscussion = discList[0];
+            setSelectedDiscussion(firstDiscussion);
+            try {
+              const details = await discussionService.getDiscussion(repoData.id, firstDiscussion.id);
+              setComments(details.comments || []);
+            } catch {
+              setComments([]);
+            }
           }
 
           setCollaborators(members);
@@ -99,43 +102,47 @@ export const RepositoryWorkspace: React.FC = () => {
     navigate(`/repositories/${repoId}/${newTab}`);
   };
 
-  const handleSelectDiscussion = async (disc: Discussion) => {
+  const handleSelectDiscussion = async (disc: Discussion, repositoryId?: string) => {
     setSelectedDiscussion(disc);
     try {
-      const details = await discussionService.getDiscussion(disc.id, repo?.owner, repo?.name);
-      if (details) {
-        setComments(details.comments);
-      }
-    } catch (err) {
-      console.error(err);
+      const targetRepositoryId = repositoryId || repo?.id;
+      if (!targetRepositoryId) return;
+      const details = await discussionService.getDiscussion(targetRepositoryId, disc.id);
+      setComments(details.comments);
+    } catch (error) {
+      const detail = axios.isAxiosError(error) ? error.response?.data?.detail : null;
+      showError(typeof detail === 'string' ? detail : 'Could not load this discussion.', 'Discussion unavailable');
     }
   };
 
   const handleCreateDiscussion = async (title: string, content: string) => {
-    if (!repo) return;
-    try {
-      const newDisc = await discussionService.createDiscussion(
-        repo.name,
-        selectedFailureRun?.id,
-        title,
-        content
-      );
-      const discList = await discussionService.getDiscussions(repo.name);
-      setDiscussions(discList);
-      await handleSelectDiscussion(newDisc);
-      return true;
-    } catch (err) {
-      console.error(err);
-      return false;
-    }
+    if (!repo) return false;
+    const newDisc = await discussionService.createDiscussion(
+      repo.id,
+      selectedFailureRun?.id,
+      title,
+      content
+    );
+    setDiscussions((current) => [newDisc, ...current.filter((discussion) => discussion.id !== newDisc.id)]);
+    setSelectedDiscussion(newDisc);
+    setComments([]);
+    return true;
   };
 
   const handleAddComment = async (discId: string, text: string) => {
-    try {
-      const newComment = await discussionService.addComment(discId, text);
-      setComments((prev) => [...prev, newComment]);
-    } catch (err) {
-      console.error(err);
+    if (!repo) throw new Error('Repository is no longer selected.');
+    const newComment = await discussionService.addComment(repo.id, discId, text);
+    setComments((prev) => [...prev, newComment]);
+  };
+
+  const handleResolveDiscussion = async (discId: string, status: 'resolved' | 'open') => {
+    if (!repo) return;
+    const updated = await discussionService.resolveDiscussion(repo.id, discId, status);
+    setDiscussions((prev) =>
+      prev.map((d) => (d.id === discId ? { ...d, status: updated.status } : d))
+    );
+    if (selectedDiscussion && selectedDiscussion.id === discId) {
+      setSelectedDiscussion((prev) => (prev ? { ...prev, status: updated.status } : null));
     }
   };
 
@@ -144,13 +151,15 @@ export const RepositoryWorkspace: React.FC = () => {
     if (!repo) return;
     const threadBody = `${logExcerpt}\n\nSuggested Fix & Diagnostics:\n${aiSolution}`;
 
-    const created = await handleCreateDiscussion(title, threadBody);
-    if (!created) {
-      success('GitHub could not create the discussion thread.', 'Push Failed');
-      return;
+    try {
+      const created = await handleCreateDiscussion(title, threadBody);
+      if (!created) return;
+      success('Failure logs and AI diagnosis were added to a GitHub issue.', 'Pushed to Thread');
+      handleTabClick('threads');
+    } catch (error) {
+      const detail = axios.isAxiosError(error) ? error.response?.data?.detail : null;
+      showError(typeof detail === 'string' ? detail : 'Could not create a discussion thread.', 'Push Failed');
     }
-    success('Failure logs and AI diagnosis pushed to Discussion Thread!', 'Pushed to Thread');
-    handleTabClick('threads');
   };
 
   const handleRetryLatestRun = async () => {
@@ -161,16 +170,35 @@ export const RepositoryWorkspace: React.FC = () => {
       success(`Queued retry for run #${selectedFailureRun.runNumber} in ${repo.name}`, 'Workflow Queued');
     } catch (error) {
       console.error(error);
-      success('GitHub could not queue this workflow retry.', 'Retry Failed');
+      showError('GitHub could not queue this workflow retry.', 'Retry Failed');
     } finally {
       setIsRetryingLatest(false);
     }
   };
 
-  if (loading || !repo) {
+  if (loading) {
     return (
       <div className="flex h-96 items-center justify-center">
         <RefreshCw className="h-8 w-8 text-purple-600 animate-spin" />
+      </div>
+    );
+  }
+
+  if (!repo) {
+    return (
+      <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0E121D] p-12 text-center text-slate-400 max-w-lg mx-auto mt-12 space-y-4 shadow-sm">
+        <AlertOctagon className="h-10 w-10 text-rose-500 mx-auto" />
+        <h3 className="text-base font-bold text-slate-900 dark:text-white">Repository Not Found</h3>
+        <p className="text-xs text-slate-500">
+          The repository '{repoId}' could not be loaded. Please ensure it is connected and synchronized.
+        </p>
+        <button
+          onClick={() => navigate('/dashboard')}
+          className="px-4 py-2 rounded-xl bg-purple-600 text-white text-xs font-bold hover:bg-purple-700 transition-all inline-flex items-center gap-2"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          <span>Back to Dashboard</span>
+        </button>
       </div>
     );
   }
@@ -364,8 +392,7 @@ export const RepositoryWorkspace: React.FC = () => {
             onSelectDiscussion={handleSelectDiscussion}
             onCreateDiscussion={handleCreateDiscussion}
             onAddComment={handleAddComment}
-            initialNewThreadTitle={initialThreadTitle}
-            initialNewThreadContent={initialThreadContent}
+            onResolveDiscussion={handleResolveDiscussion}
           />
         )}
 

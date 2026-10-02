@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Sparkles, Send, Bot, User, RefreshCw } from 'lucide-react';
 import { AIMessage } from '../types';
+import { aiService } from '../services/aiService';
 
 interface AIAssistantChatProps {
   repoName: string;
@@ -8,8 +9,8 @@ interface AIAssistantChatProps {
 
 const initialPrompts = [
   "Why did the last build fail?",
-  "Summarize this week's changes",
-  "Who should I ask about the auth module?"
+  "Summarize recent workflow runs",
+  "Who contributed to recent commits?"
 ];
 
 export const AIAssistantChat: React.FC<AIAssistantChatProps> = ({ repoName }) => {
@@ -17,34 +18,14 @@ export const AIAssistantChat: React.FC<AIAssistantChatProps> = ({ repoName }) =>
     {
       id: '1',
       role: 'assistant',
-      content: `Hello! I'm your FlowForge AI assistant for ${repoName}. I can inspect workflow error logs, explain dependency conflicts, find who resolved similar issues in your past commits, and summarize release history. How can I help today?`,
+      content: `Hello! I'm your FlowForge AI assistant for ${repoName}. I can inspect workflow error logs, explain CI issues, find who resolved similar issues in your past commits, and summarize run history. How can I help today?`,
       timestamp: 'Just now'
     }
   ]);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
 
-  const getSmartResponse = (query: string): string => {
-    const q = query.toLowerCase();
-    if (q.includes('why') || q.includes('fail') || q.includes('last build')) {
-      return `The latest build failed in the "Install dependencies (npm ci)" step with error **ERESOLVE**. Package \`react-router-dom@6.22.3\` specifies a peer requirement on React 18, whereas the repository root has \`react@19.0.0-rc\`.
-
-**Recommended fix:**
-Add \`--legacy-peer-deps\` to your npm install script or pin React packages to \`^18.2.0\` in package.json.`;
-    }
-    if (q.includes('summarize') || q.includes('changes') || q.includes('week')) {
-      return `Here is a summary of recent repository changes for **${repoName}**:
-- **Authentication**: Refactored GitHub OAuth handshake token validation and added secure session cookie handler.
-- **CI Pipelines**: Updated workflow steps to cache node_modules for 2.4x faster build times.
-- **Pull Requests**: Merged PR #14 (RAG diagnostic vector embeddings) by @bharathi1216.`;
-    }
-    if (q.includes('auth') || q.includes('who') || q.includes('ask')) {
-      return `Based on git commit history and PR contributions, **@bharathi1216** is the primary maintainer of the authentication module (8 commits, 2 PRs). You can tag them in a Discussion thread for review!`;
-    }
-    return `I analyzed the ${repoName} repository context. Everything looks healthy in core configuration, but make sure to monitor the recent peer dependency warnings on CI branch \`main\`. Let me know if you would like me to draft a pull request patch!`;
-  };
-
-  const handleSend = (textToSend?: string) => {
+  const handleSend = async (textToSend?: string) => {
     const text = textToSend || input;
     if (!text.trim()) return;
 
@@ -55,21 +36,27 @@ Add \`--legacy-peer-deps\` to your npm install script or pin React packages to \
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
 
-    setMessages((prev) => [...prev, userMsg]);
+    const newMessages = [...messages, userMsg];
+    setMessages(newMessages);
     setInput('');
     setIsTyping(true);
 
-    setTimeout(() => {
-      const reply = getSmartResponse(text);
-      const aiMsg: AIMessage = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: reply,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      };
-      setMessages((prev) => [...prev, aiMsg]);
+    try {
+      const reply = await aiService.chatWithAssistant(repoName, newMessages);
+      setMessages((prev) => [...prev, reply]);
+    } catch {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: `I analyzed ${repoName}. You can inspect recent failures in the Failure Analysis tab or trigger rerun operations.`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        }
+      ]);
+    } finally {
       setIsTyping(false);
-    }, 900);
+    }
   };
 
   return (

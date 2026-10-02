@@ -30,6 +30,15 @@ def _oauth_configured() -> bool:
     )
 
 
+def _oauth_redirect(error: str) -> RedirectResponse:
+    redirect = RedirectResponse(
+        f"{settings.FRONTEND_URL}/?oauth_error={error}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+    redirect.delete_cookie(OAUTH_STATE_COOKIE)
+    return redirect
+
+
 def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
     token = request.cookies.get(SESSION_COOKIE)
     if not token:
@@ -50,7 +59,7 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
 @router.get("/github/login")
 def github_login() -> RedirectResponse:
     if not _oauth_configured():
-        raise HTTPException(status_code=503, detail="GitHub OAuth App client ID/secret are not configured")
+        return _oauth_redirect("unavailable")
 
     state = secrets.token_urlsafe(32)
     params = {
@@ -63,52 +72,70 @@ def github_login() -> RedirectResponse:
         f"https://github.com/login/oauth/authorize?{urlencode(params)}",
         status_code=status.HTTP_307_TEMPORARY_REDIRECT,
     )
-    redirect.set_cookie(OAUTH_STATE_COOKIE, state, httponly=True, secure=False, samesite="lax", max_age=600)
+    redirect.set_cookie(
+        OAUTH_STATE_COOKIE,
+        state,
+        httponly=True,
+        secure=settings.FRONTEND_URL.startswith("https://"),
+        samesite="lax",
+        max_age=600,
+    )
     return redirect
 
 
 @router.get("/github/callback")
-async def github_callback(code: str, state: str, request: Request, db: Session = Depends(get_db)) -> RedirectResponse:
+async def github_callback(
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
     expected_state = request.cookies.get(OAUTH_STATE_COOKIE)
-    if not expected_state or not secrets.compare_digest(expected_state, state):
-        return RedirectResponse(
-            f"{settings.FRONTEND_URL}/?oauth_error=invalid_state",
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
+    if not expected_state or not state or not secrets.compare_digest(expected_state, state):
+        return _oauth_redirect("invalid_state")
+    if error == "access_denied":
+        return _oauth_redirect("access_denied")
+    if error:
+        return _oauth_redirect("failed")
+    if not code:
+        return _oauth_redirect("failed")
     if not _oauth_configured():
-        raise HTTPException(status_code=503, detail="GitHub OAuth credentials are not configured")
+        return _oauth_redirect("unavailable")
 
-    async with httpx.AsyncClient(timeout=15) as client:
-        token_response = await client.post(
-            "https://github.com/login/oauth/access_token",
-            data={
-                "client_id": settings.GITHUB_CLIENT_ID,
-                "client_secret": settings.GITHUB_CLIENT_SECRET,
-                "code": code,
-                "redirect_uri": settings.GITHUB_REDIRECT_URI,
-            },
-            headers={"Accept": "application/json"},
-        )
-        token_response.raise_for_status()
-        token_data = token_response.json()
-        access_token = token_data.get("access_token")
-        if not access_token:
-            github_error = token_data.get("error_description") or token_data.get("error")
-            detail = f"GitHub OAuth token exchange failed: {github_error}" if github_error else "GitHub did not return an access token"
-            raise HTTPException(status_code=400, detail=detail)
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            token_response = await client.post(
+                "https://github.com/login/oauth/access_token",
+                data={
+                    "client_id": settings.GITHUB_CLIENT_ID,
+                    "client_secret": settings.GITHUB_CLIENT_SECRET,
+                    "code": code,
+                    "redirect_uri": settings.GITHUB_REDIRECT_URI,
+                },
+                headers={"Accept": "application/json"},
+            )
+            token_response.raise_for_status()
+            token_data = token_response.json()
+            access_token = token_data.get("access_token")
+            if not access_token:
+                return _oauth_redirect("failed")
 
-        github_headers = {
-            "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {access_token}",
-            "X-GitHub-Api-Version": "2022-11-28",
-        }
-        user_response = await client.get("https://api.github.com/user", headers=github_headers)
-        user_response.raise_for_status()
-        account = user_response.json()
-        github_id = account.get("id")
-        username = account.get("login")
-        if not github_id or not username:
-            raise HTTPException(status_code=400, detail="GitHub account information is unavailable")
+            github_headers = {
+                "Accept": "application/vnd.github+json",
+                "Authorization": f"Bearer {access_token}",
+                "X-GitHub-Api-Version": "2022-11-28",
+            }
+            user_response = await client.get("https://api.github.com/user", headers=github_headers)
+            user_response.raise_for_status()
+            account = user_response.json()
+    except (httpx.HTTPError, ValueError):
+        return _oauth_redirect("github_unavailable")
+
+    github_id = account.get("id")
+    username = account.get("login")
+    if not github_id or not username:
+        return _oauth_redirect("failed")
 
     user = db.query(User).filter(User.github_id == str(github_id)).one_or_none()
     if not user:
@@ -123,14 +150,50 @@ async def github_callback(code: str, state: str, request: Request, db: Session =
     db.commit()
     db.refresh(user)
 
-    redirect = RedirectResponse(f"{settings.FRONTEND_URL}/dashboard", status_code=status.HTTP_303_SEE_OTHER)
-    redirect.set_cookie(SESSION_COOKIE, _session_token(user.id), httponly=True, secure=False, samesite="lax", max_age=60 * 60 * 24 * 7)
+    redirect = RedirectResponse(
+        f"{settings.FRONTEND_URL}/dashboard?auth=connected",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+    redirect.set_cookie(
+        SESSION_COOKIE,
+        _session_token(user.id),
+        httponly=True,
+        secure=settings.FRONTEND_URL.startswith("https://"),
+        samesite="lax",
+        max_age=60 * 60 * 24 * 7,
+    )
     redirect.delete_cookie(OAUTH_STATE_COOKIE)
     return redirect
 
 
 @router.get("/me")
-def current_user(user: User = Depends(get_current_user)) -> dict:
+async def current_user(
+    response: Response,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    if not user.access_token:
+        response.delete_cookie(SESSION_COOKIE)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="GitHub authorization has expired")
+
+    try:
+        async with httpx.AsyncClient(timeout=4) as client:
+            gh_res = await client.get(
+                "https://api.github.com/user",
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "Authorization": f"Bearer {user.access_token}",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+            )
+            if gh_res.status_code == 401:
+                user.access_token = None
+                db.commit()
+                response.delete_cookie(SESSION_COOKIE)
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="GitHub authorization has expired")
+    except httpx.HTTPError:
+        pass
+
     return {
         "id": str(user.github_id),
         "username": user.username,

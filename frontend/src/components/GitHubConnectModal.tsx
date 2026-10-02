@@ -48,7 +48,7 @@ export const GitHubConnectModal: React.FC<GitHubConnectModalProps> = ({ isOpen, 
               <div>
                 <h3 className="text-lg font-black text-slate-900 dark:text-white">Connect GitHub</h3>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Authorize FlowForge to access your repositories and workflows.
+                  Review the GitHub permissions requested for repository and workflow features.
                 </p>
               </div>
             </div>
@@ -58,12 +58,12 @@ export const GitHubConnectModal: React.FC<GitHubConnectModalProps> = ({ isOpen, 
               className="flex w-full items-center justify-center gap-2 rounded-xl bg-purple-600 py-3 text-xs font-bold text-white shadow-md transition-all hover:bg-purple-700"
             >
               <GithubIcon className="h-4 w-4 fill-white" />
-              Continue with GitHub OAuth
+              Continue with GitHub
             </button>
 
             <div className="flex items-start gap-2.5 rounded-xl border border-purple-500/20 bg-purple-500/10 p-3 text-[11px] leading-relaxed text-slate-600 dark:text-slate-300">
               <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-purple-500" />
-              <span>GitHub handles authorization. FlowForge uses a secure server session and does not ask for a personal access token.</span>
+              <span>GitHub handles sign-in. This OAuth app requests the broad <code>repo</code> scope, which can grant write access to private repositories. Review GitHub’s permission screen before approving; you can revoke access from your GitHub settings at any time.</span>
             </div>
           </motion.div>
         </div>

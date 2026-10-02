@@ -1,45 +1,40 @@
 import { Discussion, Comment } from '../types';
-import { githubApiService } from './githubApiService';
+import apiClient from './apiClient';
 
 export const discussionService = {
   async getDiscussions(repoId: string): Promise<Discussion[]> {
-    const owner = githubApiService.getSavedUsername() || 'user';
-    return githubApiService.fetchDiscussions(owner, repoId);
+    const response = await apiClient.get<Discussion[]>(`/repositories/${encodeURIComponent(repoId)}/discussions`);
+    return response.data;
   },
 
-  async getDiscussion(discId: string, repoOwner?: string, repoName?: string): Promise<{ discussion: Discussion; comments: Comment[] } | null> {
-    const owner = repoOwner || githubApiService.getSavedUsername() || 'user';
-    const name = repoName || 'repo';
-    const discussions = await githubApiService.fetchDiscussions(owner, name);
-    const disc = discussions.find(d => d.id === discId);
-    if (!disc) return null;
-
-    const comments = await githubApiService.fetchComments(owner, name, discId);
-    return { discussion: disc, comments };
+  async getDiscussion(repoId: string, discussionId: string): Promise<{ discussion: Discussion; comments: Comment[] }> {
+    const response = await apiClient.get<{ discussion: Discussion; comments: Comment[] }>(
+      `/repositories/${encodeURIComponent(repoId)}/discussions/${encodeURIComponent(discussionId)}`
+    );
+    return response.data;
   },
 
   async createDiscussion(repoId: string, runId: string | undefined, title: string, content: string): Promise<Discussion> {
-    const owner = githubApiService.getSavedUsername() || 'user';
-    const name = repoId;
-    void runId;
-    return githubApiService.createDiscussion(owner, name, title, content);
+    const response = await apiClient.post<Discussion>(
+      `/repositories/${encodeURIComponent(repoId)}/discussions`,
+      { title, content, run_id: runId }
+    );
+    return response.data;
   },
 
-  async addComment(discId: string, content: string, repoOwner?: string, repoName?: string, logExcerpt?: string): Promise<Comment> {
-    const owner = repoOwner || githubApiService.getSavedUsername() || 'user';
-    const name = repoName || 'repo';
-    
-    try {
-      const liveComment = await githubApiService.createComment(owner, name, discId, content);
-      if (liveComment) return liveComment;
-    } catch (error) {
-      throw error;
-    }
-    throw new Error('Comment was not created because GitHub did not return a comment.');
+  async addComment(repoId: string, discussionId: string, content: string): Promise<Comment> {
+    const response = await apiClient.post<Comment>(
+      `/repositories/${encodeURIComponent(repoId)}/discussions/${encodeURIComponent(discussionId)}/comments`,
+      { content }
+    );
+    return response.data;
   },
 
-  async resolveDiscussion(discId: string): Promise<void> {
-    void discId;
-    throw new Error('Resolving a discussion is not available until the GitHub issue update endpoint is connected.');
+  async resolveDiscussion(repoId: string, discId: string, status: 'resolved' | 'open' = 'resolved'): Promise<Discussion> {
+    const response = await apiClient.patch<Discussion>(
+      `/repositories/${encodeURIComponent(repoId)}/discussions/${encodeURIComponent(discId)}`,
+      { status }
+    );
+    return response.data;
   }
 };

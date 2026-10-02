@@ -1,6 +1,8 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { User } from '../types';
 import { authService } from '../services/authService';
+import { repositoryService } from '../services/repositoryService';
+import { SessionExpiredModal } from '../components/SessionExpiredModal';
 
 interface AuthContextType {
   user: User | null;
@@ -8,6 +10,8 @@ interface AuthContextType {
   username: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
+  isAuthExpired: boolean;
+  triggerAuthExpired: () => void;
   selectedRepoNames: string[];
   loginWithToken: (token: string) => Promise<User>;
   loginWithUsername: (username: string) => Promise<User>;
@@ -23,7 +27,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [token, setToken] = useState<string | null>(null);
   const [username, setUsername] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isAuthExpired, setIsAuthExpired] = useState(false);
   const [selectedRepoNames, setSelectedRepoNamesState] = useState<string[]>([]);
+
+  useEffect(() => {
+    const handleExpiredEvent = () => {
+      setIsAuthExpired(true);
+      setUser(null);
+    };
+
+    window.addEventListener('flowforge:auth-expired', handleExpiredEvent);
+    return () => {
+      window.removeEventListener('flowforge:auth-expired', handleExpiredEvent);
+    };
+  }, []);
 
   useEffect(() => {
     const initAuth = async () => {
@@ -32,8 +49,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setUser(currentUser);
         setToken(null);
         setUsername(currentUser?.username || null);
-      } catch (e) {
-        console.error('Error initializing AuthProvider:', e);
+      } catch (e: any) {
+        const detail = e?.response?.data?.detail;
+        if (typeof detail === 'string' && detail.toLowerCase().includes('expired')) {
+          setIsAuthExpired(true);
+        }
+        setUser(null);
       } finally {
         setIsLoading(false);
       }
@@ -60,16 +81,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch (error) {
       console.error('Error signing out:', error);
     } finally {
+      repositoryService.clearCache();
       setUser(null);
       setToken(null);
       setUsername(null);
+      setIsAuthExpired(false);
       setSelectedRepoNamesState([]);
     }
   };
 
-  const setSelectedRepoNames = (repos: string[]) => {
+  const setSelectedRepoNames = useCallback((repos: string[]) => {
     setSelectedRepoNamesState(repos);
-  };
+  }, []);
 
   const refreshUser = async () => {
     const currentUser = await authService.getCurrentUser();
@@ -83,8 +106,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         user,
         token,
         username,
-        isAuthenticated: !!user,
+        isAuthenticated: !!user && !isAuthExpired,
         isLoading,
+        isAuthExpired,
+        triggerAuthExpired: () => {
+          setIsAuthExpired(true);
+          setUser(null);
+        },
         selectedRepoNames,
         loginWithToken,
         loginWithUsername,
@@ -94,6 +122,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }}
     >
       {children}
+      <SessionExpiredModal isOpen={isAuthExpired} />
     </AuthContext.Provider>
   );
 };

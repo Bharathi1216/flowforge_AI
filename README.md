@@ -40,10 +40,17 @@ Launch the local Vite server:
 npm run dev
 ```
 
-In a second terminal, start the backend from the repository root:
-```bash
+Use Python 3.11 for the backend. The free-threaded Python 3.13t runtime is not compatible with the current crypto stack used by this project. Create and install the backend environment once:
+```powershell
 cd backend
-python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8001
+py -3.11 -m venv .venv
+.\.venv\Scripts\python -m pip install -r requirements.txt
+```
+
+In a second terminal, start the backend:
+```powershell
+cd backend
+.\.venv\Scripts\python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8001
 ```
 
 ### 3. Explore the Dashboard

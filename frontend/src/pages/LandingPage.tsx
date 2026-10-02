@@ -1,17 +1,49 @@
-import React, { useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
+import { Navigate, useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { ArrowRight, ShieldCheck, FolderGit2, Check, Sparkles } from 'lucide-react';
+import { AlertCircle, ArrowRight, FolderGit2, ShieldCheck } from 'lucide-react';
 import { GithubIcon } from '../components/GithubIcon';
-import { GitHubConnectModal } from '../components/GitHubConnectModal';
 import { useAuth } from '../contexts/AuthContext';
 
 export const LandingPage: React.FC = () => {
-  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { user, isAuthenticated } = useAuth();
-  const [showConnectModal, setShowConnectModal] = useState(false);
+  const { isAuthenticated, isLoading, logout } = useAuth();
+  const [isRedirecting, setIsRedirecting] = useState(false);
   const oauthError = searchParams.get('oauth_error');
+
+  useEffect(() => {
+    if (oauthError && isAuthenticated) {
+      logout();
+    }
+  }, [oauthError, isAuthenticated]);
+
+  if (isLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#080A10] text-slate-300">
+        <div className="flex items-center gap-3 text-sm" role="status">
+          <span className="h-5 w-5 animate-spin rounded-full border-2 border-purple-400 border-t-transparent" />
+          Checking your session...
+        </div>
+      </div>
+    );
+  }
+
+  if (isAuthenticated && !oauthError) return <Navigate to="/dashboard" replace />;
+
+  const errorMessages: Record<string, string> = {
+    access_denied: 'GitHub access was not granted. FlowForge needs GitHub access to load repository and workflow features. Review the permissions on GitHub before approving, then try again whenever you are ready.',
+    invalid_state: 'This sign-in attempt expired or could not be verified. Please start again.',
+    unavailable: 'GitHub sign-in is not available for this deployment yet. Please try again later.',
+    github_unavailable: 'GitHub could not complete sign-in just now. Check your connection and try again.',
+    session_expired: 'Your session has expired. Continue with GitHub to reconnect your account.',
+    failed: 'We could not sign you in with GitHub. Please try again.',
+  };
+  const errorMessage = oauthError ? errorMessages[oauthError] || errorMessages.failed : null;
+
+  const startLogin = () => {
+    setIsRedirecting(true);
+    window.location.assign(`${import.meta.env.VITE_API_URL || '/api'}/auth/github/login`);
+  };
 
   return (
     <div className="relative min-h-screen w-full bg-[#080A10] text-slate-100 flex flex-col justify-between overflow-hidden selection:bg-purple-500/30">
@@ -31,29 +63,13 @@ export const LandingPage: React.FC = () => {
           </span>
         </div>
 
-        {isAuthenticated && user ? (
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => navigate('/dashboard')}
-              className="text-xs font-bold text-white px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 transition-colors shadow-sm"
-            >
-              Open Workspace (@{user.username})
-            </button>
-            <button
-              onClick={() => setShowConnectModal(true)}
-              className="text-xs font-bold text-slate-400 hover:text-white transition-colors px-3 py-2 rounded-xl bg-slate-900 border border-slate-800"
-            >
-              Switch Account
-            </button>
-          </div>
-        ) : (
-          <button
-            onClick={() => setShowConnectModal(true)}
-            className="text-xs font-bold text-slate-300 hover:text-white transition-colors px-4 py-2 rounded-xl bg-slate-900 border border-slate-800 hover:border-purple-500/40"
-          >
-            Sign in with GitHub
-          </button>
-        )}
+        <button
+          onClick={startLogin}
+          disabled={isRedirecting}
+          className="text-xs font-bold text-slate-300 hover:text-white transition-colors px-4 py-2 rounded-xl bg-slate-900 border border-slate-800 hover:border-purple-500/40 disabled:opacity-60"
+        >
+          {isRedirecting ? 'Connecting...' : 'Continue with GitHub'}
+        </button>
       </header>
 
       {/* Hero Content Center */}
@@ -65,9 +81,13 @@ export const LandingPage: React.FC = () => {
           className="space-y-6 flex flex-col items-center"
         >
           {/* Badge */}
-          {oauthError === 'invalid_state' && (
-            <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
-              This GitHub login expired or was opened from an old tab. Start a new sign-in attempt.
+          {errorMessage && (
+            <div className="flex max-w-xl items-start gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-left text-sm text-rose-100" role="alert" aria-live="polite">
+              <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-rose-300" />
+              <div>
+                <p className="font-semibold">We couldn’t sign you in with GitHub</p>
+                <p className="mt-1 text-rose-100/80">{errorMessage}</p>
+              </div>
             </div>
           )}
           <div className="inline-flex items-center gap-2 rounded-full border border-purple-500/30 bg-purple-500/10 px-4 py-1.5 text-xs font-bold text-purple-300 backdrop-blur-md">
@@ -78,39 +98,31 @@ export const LandingPage: React.FC = () => {
           {/* Headline */}
           <h1 className="text-4xl sm:text-6xl font-black tracking-tight text-white leading-tight font-heading">
             Your intelligence layer for{' '}
-            <span className="text-purple-400">
-              GitHub Actions
-            </span>
+            <span className="text-purple-400">GitHub Actions</span>
           </h1>
 
           <p className="text-base sm:text-lg text-slate-300 max-w-xl leading-relaxed font-sans">
-            Connect your real GitHub repositories to instantly diagnose CI/CD failures, trace step-by-step logs, and collaborate on fixes.
+            Connect your GitHub repositories to diagnose CI/CD failures, trace workflow logs, and collaborate on fixes.
           </p>
 
           {/* Primary Action Buttons */}
           <div className="pt-3 flex flex-col items-center gap-3 w-full sm:w-auto">
-            {isAuthenticated && user ? (
-              <button
-                onClick={() => navigate('/dashboard')}
-                className="group relative flex items-center justify-center gap-3 rounded-2xl bg-purple-600 hover:bg-purple-700 text-white px-9 py-4 text-sm font-black shadow-xl shadow-purple-500/25 hover:scale-[1.02] active:scale-[0.98] transition-all w-full sm:w-auto min-w-[280px]"
-              >
-                <span>Launch Workspace (@{user.username})</span>
-                <ArrowRight className="h-4 w-4 text-purple-200 group-hover:translate-x-1 transition-transform" />
-              </button>
-            ) : (
-              <button
-                onClick={() => setShowConnectModal(true)}
-                className="group relative flex items-center justify-center gap-3 rounded-2xl bg-white hover:bg-slate-100 text-slate-950 px-9 py-4 text-sm font-black shadow-xl shadow-purple-500/15 hover:scale-[1.02] active:scale-[0.98] transition-all w-full sm:w-auto min-w-[280px]"
-              >
-                <GithubIcon className="h-5 w-5 fill-slate-950" />
-                <span>Connect with GitHub</span>
-                <ArrowRight className="h-4 w-4 text-slate-600 group-hover:translate-x-1 transition-transform" />
-              </button>
-            )}
+            <button
+              onClick={startLogin}
+              disabled={isRedirecting}
+              className="group relative flex min-h-12 items-center justify-center gap-3 rounded-xl bg-white hover:bg-slate-100 text-slate-950 px-8 py-3.5 text-sm font-black shadow-xl shadow-purple-500/15 transition-all w-full sm:w-auto min-w-[280px] disabled:opacity-70"
+            >
+              <GithubIcon className="h-5 w-5 fill-slate-950" />
+              <span>{isRedirecting ? 'Connecting to GitHub...' : 'Continue with GitHub'}</span>
+              <ArrowRight className="h-4 w-4 text-slate-600 group-hover:translate-x-1 transition-transform" />
+            </button>
+            <a href="#access" className="text-sm font-semibold text-slate-300 underline decoration-slate-600 underline-offset-4 hover:text-white">
+              How access works
+            </a>
 
-            <div className="flex items-center gap-1.5 text-xs text-slate-400">
+            <div id="access" className="flex max-w-md items-start gap-1.5 text-xs text-slate-400">
               <ShieldCheck className="h-4 w-4 text-purple-400" />
-              <span>Secure GitHub OAuth with private repository access</span>
+              <span>We use your GitHub authorization for repository and workflow features. Review the full permissions shown by GitHub before approving; you can revoke access from your GitHub settings.</span>
             </div>
           </div>
         </motion.div>
@@ -126,11 +138,6 @@ export const LandingPage: React.FC = () => {
         </div>
       </footer>
 
-      {/* GitHub Authorization Modal */}
-      <GitHubConnectModal
-        isOpen={showConnectModal}
-        onClose={() => setShowConnectModal(false)}
-      />
     </div>
   );
 };

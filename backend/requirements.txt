@@ -1,13 +1,15 @@
-fastapi>=0.115.0
-uvicorn[standard]>=0.32.0
+fastapi==0.141.1
+uvicorn[standard]==0.54.0
 # SQLAlchemy and psycopg2-binary provide the PostgreSQL connection used for Supabase.
-sqlalchemy>=2.0.35
-pydantic>=2.9.0
-pydantic-settings>=2.5.0
-python-dotenv>=1.0.1
-httpx>=0.27.2
+sqlalchemy==2.1.1
+pydantic==2.13.5
+pydantic-settings==2.15.0
+python-dotenv==1.2.3
+httpx==0.28.1
 # httpx calls GitHub repositories, Actions runs, collaborators, and webhook APIs.
-python-jose[cryptography]>=3.3.0
-psycopg2-binary>=2.9.9
-google-genai>=1.0.0
-python-multipart>=0.0.12
+python-jose[cryptography]==3.5.0
+psycopg2-binary==2.9.13
+protobuf<5.0.0
+google-genai==2.25.0
+python-multipart==0.0.32
+chromadb==1.5.9

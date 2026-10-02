@@ -142,9 +142,6 @@ async def list_workflow_runs(
     repository = _find_workflow_repository(repo_id, user.id, db)
     if not repository:
         raise HTTPException(status_code=404, detail="Repository not found")
-    if not user.access_token:
-        raise HTTPException(status_code=401, detail="GitHub authorization has expired")
-
     existing_runs = (
         db.query(WorkflowRun)
         .filter(WorkflowRun.repository_id == repository.id)
@@ -155,14 +152,15 @@ async def list_workflow_runs(
     if existing_runs and not refresh:
         return [_payload(run) for run in existing_runs]
 
+    if not user.access_token:
+        return [_payload(run) for run in existing_runs]
+
     try:
         for github_run in await _github_runs(repository, user):
             _upsert_run(repository, github_run, db)
         db.commit()
     except Exception:
-        if existing_runs:
-            return [_payload(run) for run in existing_runs]
-        raise
+        return [_payload(run) for run in existing_runs]
 
     runs = db.query(WorkflowRun).filter(WorkflowRun.repository_id == repository.id).order_by(WorkflowRun.created_at.desc()).limit(50).all()
     return [_payload(run) for run in runs]
@@ -171,26 +169,30 @@ async def list_workflow_runs(
 @router.get("/definitions")
 async def list_workflows(repo_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[dict]:
     repository = _find_workflow_repository(repo_id, user.id, db)
-    if not repository or not user.access_token:
+    if not repository:
         raise HTTPException(status_code=404, detail="Repository not found")
+    if not user.access_token:
+        return []
 
-    async with httpx.AsyncClient(timeout=15) as client:
-        response = await client.get(
-            f"https://api.github.com/repos/{repository.full_name}/actions/workflows",
-            headers={**GITHUB_HEADERS, "Authorization": f"Bearer {user.access_token}"},
-        )
-    if response.status_code == 401:
-        raise HTTPException(status_code=401, detail="GitHub authorization has expired")
-    response.raise_for_status()
-    return [
-        {
-            "id": str(workflow["id"]),
-            "name": workflow["name"],
-            "path": workflow["path"],
-            "status": "active" if workflow.get("state") == "active" else "inactive",
-        }
-        for workflow in response.json().get("workflows", [])
-    ]
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.get(
+                f"https://api.github.com/repos/{repository.full_name}/actions/workflows",
+                headers={**GITHUB_HEADERS, "Authorization": f"Bearer {user.access_token}"},
+            )
+            if response.status_code == 200:
+                return [
+                    {
+                        "id": str(workflow["id"]),
+                        "name": workflow["name"],
+                        "path": workflow["path"],
+                        "status": "active" if workflow.get("state") == "active" else "inactive",
+                    }
+                    for workflow in response.json().get("workflows", [])
+                ]
+    except Exception:
+        pass
+    return []
 
 
 @router.get("/{run_id}/logs")
@@ -239,6 +241,24 @@ async def get_workflow_logs(repo_id: str, run_id: str, user: User = Depends(get_
                 db.add(existing)
             existing.raw_logs = raw_logs
             existing.error_snippet = error_snippet or None
+
+            # Index into ChromaDB vector store
+            if error_snippet:
+                try:
+                    from app.services.vector_store import vector_store
+                    vector_store.index_failure(
+                        repo_id=str(repository.id),
+                        run_id=workflow_run.github_run_id,
+                        run_number=workflow_run.run_number,
+                        workflow_name=workflow_run.workflow_name,
+                        step_name=job.get("name") or "GitHub Actions",
+                        error_snippet=error_snippet,
+                        root_cause=existing.root_cause or "",
+                        suggested_fix=existing.suggested_fix or "",
+                        exit_code=1,
+                    )
+                except Exception:
+                    pass
 
             lines.extend(_log_lines(raw_logs, job.get("name") or "GitHub Actions"))
 

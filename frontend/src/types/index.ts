@@ -100,6 +100,7 @@ export interface FailureAnalysis {
   suggestedFix: string;
   similarPreviousRunId?: string;
   similarPreviousRunNumber?: number;
+  similarMatchPercent?: number;
   confidence: number;
   relevantDocs: { title: string; url: string }[];
   previousDiscussions: { id: string; title: string }[];

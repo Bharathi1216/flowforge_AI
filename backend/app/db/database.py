@@ -1,23 +1,35 @@
-from sqlalchemy import create_engine
+import logging
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import declarative_base, sessionmaker
 from app.config import settings
 
-# If postgresql URL starts with postgres://, fix it for SQLAlchemy 2.0
-db_url = settings.DATABASE_URL
-if db_url.startswith("postgres://"):
-    db_url = db_url.replace("postgres://", "postgresql://", 1)
+logger = logging.getLogger(__name__)
 
-# Check if SQLite or PostgreSQL
-connect_args = {"check_same_thread": False} if "sqlite" in db_url else {}
+def _build_engine():
+    db_url = settings.DATABASE_URL
+    if "sqlite" in db_url:
+        return create_engine(db_url, connect_args={"check_same_thread": False})
+    
+    if db_url.startswith("postgres://"):
+        db_url = db_url.replace("postgres://", "postgresql://", 1)
+    if db_url.startswith("postgresql://"):
+        db_url = db_url.replace("postgresql://", "postgresql+psycopg2://", 1)
+    if db_url.startswith("postgresql+"):
+        db_url = make_url(db_url).update_query_dict({"sslmode": "require"})
 
-engine = create_engine(
-    db_url,
-    connect_args=connect_args,
-    pool_pre_ping=True if "sqlite" not in db_url else False,
-)
+    try:
+        eng = create_engine(db_url, pool_pre_ping=True)
+        with eng.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return eng
+    except Exception as exc:
+        logger.warning("Remote database unavailable (%s). Falling back to local SQLite database.", exc)
+        sqlite_url = f"sqlite:///{settings.LOCAL_DATABASE_PATH.as_posix()}"
+        return create_engine(sqlite_url, connect_args={"check_same_thread": False})
 
+engine = _build_engine()
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
 Base = declarative_base()
 
 def get_db():

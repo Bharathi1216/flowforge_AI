@@ -6,8 +6,10 @@ import {
   CheckCircle2, AlertCircle, ShieldCheck, Zap
 } from 'lucide-react';
 import { useAIAssistant } from '../contexts/AIAssistantContext';
+import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { useNavigate } from 'react-router-dom';
+import { aiService } from '../services/aiService';
 
 interface Message {
   id: string;
@@ -19,26 +21,28 @@ interface Message {
 
 export const AIAssistantDrawer: React.FC = () => {
   const { isOpen, closeAssistant, currentRepoContext, initialPrompt, setInitialPrompt } = useAIAssistant();
+  const { user } = useAuth();
   const { success } = useToast();
   const navigate = useNavigate();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const activeRepo = currentRepoContext || 'FlowForge-AI';
+  const userName = user?.name || user?.username || 'developer';
 
   const [messages, setMessages] = useState<Message[]>([
     {
       id: 'welcome',
       role: 'assistant',
-      content: `Hello Bharathi! I am your FlowForge AI Assistant for **${activeRepo}**.\n\nI can analyze your GitHub Actions build failures, explain dependency peer mismatches (like React 19 vs 18), generate workflow YAML patches, or find the right collaborator to review.`,
-      codeSnippet: `# Quick diagnostic check for ${activeRepo}\nRun #92 failed on step: npm ci (ERESOLVE)\nRoot cause: react-router-dom@6.22.3 peer React 18 mismatch`,
+      content: `Hello ${userName}! I am your FlowForge AI Assistant for **${activeRepo}**.\n\nI can analyze your GitHub Actions build failures, explain CI run errors, generate workflow YAML patches, or answer questions about repository health.`,
+      codeSnippet: `# Quick diagnostic check for ${activeRepo}\n# Monitored via FlowForge AI & GitHub Actions`,
       timestamp: 'Just now'
     }
   ]);
   const [inputValue, setInputValue] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [copiedCodeId, setCopiedCodeId] = useState<string | null>(null);
-  const [selectedModel, setSelectedModel] = useState<'flowforge-agent' | 'gemini-2.5' | 'claude-3.7'>('flowforge-agent');
+  const [selectedEngine] = useState<'flowforge-agent'>('flowforge-agent');
 
   // Handle initial prompt passed when opening
   useEffect(() => {
@@ -58,103 +62,13 @@ export const AIAssistantDrawer: React.FC = () => {
   }, [messages, isTyping]);
 
   const quickPrompts = [
-    { label: 'Diagnose Run #92 failure', prompt: 'Why did the latest CI build fail for FlowForge-AI and how do I fix it?' },
-    { label: 'Generate CI fix patch', prompt: 'Provide a code patch for the npm ERESOLVE peer dependency mismatch in package.json and ci.yml.' },
-    { label: 'Who touched this module?', prompt: 'Who is the primary contributor for auth & dependency configuration in this repository?' },
-    { label: 'Summarize weekly changes', prompt: 'Summarize recent commits, PRs, and workflow health for FlowForge-AI.' }
+    { label: 'Diagnose workflow failure', prompt: `Why did the latest CI workflow run fail for ${activeRepo} and how do I fix it?` },
+    { label: 'Generate workflow patch', prompt: `Provide a workflow fix or patch for recent failures in ${activeRepo}.` },
+    { label: 'Who touched this module?', prompt: `Who are the active contributors for ${activeRepo}?` },
+    { label: 'Summarize pipeline health', prompt: `Summarize recent workflow runs and health for ${activeRepo}.` }
   ];
 
-  const generateAIResponse = (userQuery: string): { text: string; code?: string } => {
-    const q = userQuery.toLowerCase();
-
-    if (q.includes('fail') || q.includes('why') || q.includes('92') || q.includes('build') || q.includes('error')) {
-      return {
-        text: `### 🔍 CI Failure Diagnostics (Run #92)
-
-**Step:** \`Install dependencies (npm ci)\`
-**Exit Code:** \`1\`
-**Error Code:** \`ERESOLVE\`
-
-#### Root Cause:
-Package \`react-router-dom@6.22.3\` specifies a strict peer requirement on \`react@>=18 <19\`. Your root \`package.json\` has \`react@19.0.0-rc\`. In modern npm (v9+), peer conflicts strictly halt execution during CI.
-
-#### Solution Strategy:
-1. **Option A (Recommended for CI):** Add the \`--legacy-peer-deps\` flag to your GitHub Actions workflow step.
-2. **Option B (Dependency alignment):** Pin React and React-DOM to \`^18.2.0\` in \`package.json\`.`,
-        code: `# 1. In your .github/workflows/ci.yml:
-- name: Install dependencies
-  run: npm ci --legacy-peer-deps
-
-# 2. Or pin React in package.json:
-npm install react@^18.2.0 react-dom@^18.2.0`
-      };
-    }
-
-    if (q.includes('patch') || q.includes('generate') || q.includes('fix') || q.includes('yaml')) {
-      return {
-        text: `Here is the complete patched workflow configuration for \`.github/workflows/ci.yml\` that bypasses peer conflict and enables dependency caching:`,
-        code: `name: CI Test & Build
-
-on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Node.js 20.x
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'npm'
-      - name: Install Dependencies
-        run: npm ci --legacy-peer-deps
-      - name: Run Tests
-        run: npm test -- --passWithNoTests
-      - name: Build Application
-        run: npm run build`
-      };
-    }
-
-    if (q.includes('who') || q.includes('contributor') || q.includes('owner') || q.includes('auth') || q.includes('teammate')) {
-      return {
-        text: `### 👥 Collaborator & Module Attribution
-
-Based on git commit history and PR contributions in **${activeRepo}**:
-- **@bharathi1216** (Owner): 28 commits across authentication, CI workflow pipeline, and RAG diagnostics.
-- **@john-lead** (Lead Architect): 14 commits in backend database and telemetry.
-- **@alex-dev**: 9 commits in UI layout and logs viewer.
-
-**Recommendation:** Tag **@bharathi1216** in the Discussion thread to approve the CI workflow patch.`,
-        code: `@bharathi1216 Can you review the proposed --legacy-peer-deps patch for workflow #92?`
-      };
-    }
-
-    if (q.includes('summary') || q.includes('summarize') || q.includes('changes') || q.includes('commits')) {
-      return {
-        text: `### 📊 Weekly Summary for ${activeRepo}
-
-- **Active Workflows:** 3 pipelines configured (2 passing, 1 failing)
-- **Resolved Issues:** 4 discussion threads addressed
-- **Latest Merges:** PR #14 (*RAG diagnostic vector embeddings integration*)
-- **Health Score:** **88%** automated pipeline reliability`,
-        code: `git log --oneline -n 5\n# e7f2b1a Fix auth webhook retry logic & dependency tree\n# 4b9c1d0 Merge pull request #14 from RAG-embeddings\n# 91a8e2f Update tailwind configuration and dark theme`
-      };
-    }
-
-    return {
-      text: `I've analyzed the current repository state for **${activeRepo}** using RAG vector embeddings. 
-
-All configuration manifests and workflow files are indexed. You can ask me to write a custom GitHub Actions workflow step, optimize build times, or investigate any CI failure trace.`,
-      code: `npx flowforge-cli diagnose --repo=${activeRepo}`
-    };
-  };
-
-  const handleSendMessage = (textToSend?: string) => {
+  const handleSendMessage = async (textToSend?: string) => {
     const text = textToSend || inputValue;
     if (!text.trim()) return;
 
@@ -165,22 +79,48 @@ All configuration manifests and workflow files are indexed. You can ask me to wr
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
 
-    setMessages((prev) => [...prev, userMessage]);
+    const newMessages = [...messages, userMessage];
+    setMessages(newMessages);
     setInputValue('');
     setIsTyping(true);
 
-    setTimeout(() => {
-      const response = generateAIResponse(text);
+    try {
+      const response = await aiService.chatWithAssistant(
+        activeRepo,
+        newMessages.map((m) => ({
+          id: m.id,
+          role: m.role,
+          content: m.content,
+          timestamp: m.timestamp,
+        }))
+      );
+
+      // Extract code block if present
+      const codeMatch = response.content.match(/```(?:[a-zA-Z]+)?\s*([\s\S]*?)```/);
+      const extractedCode = codeMatch ? codeMatch[1].trim() : undefined;
+      const cleanContent = response.content.replace(/```(?:[a-zA-Z]+)?\s*([\s\S]*?)```/g, '').trim() || response.content;
+
       const aiMessage: Message = {
-        id: (Date.now() + 1).toString(),
+        id: response.id || (Date.now() + 1).toString(),
         role: 'assistant',
-        content: response.text,
-        codeSnippet: response.code,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        content: cleanContent,
+        codeSnippet: extractedCode,
+        timestamp: response.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       };
       setMessages((prev) => [...prev, aiMessage]);
+    } catch {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: `I analyzed ${activeRepo}. You can review failure logs in the Failure Analysis tab or rerun jobs.`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        }
+      ]);
+    } finally {
       setIsTyping(false);
-    }, 850);
+    }
   };
 
   const handleCopyCode = (code: string, id: string) => {
@@ -275,7 +215,7 @@ All configuration manifests and workflow files are indexed. You can ask me to wr
               <div className="mt-3 flex items-center justify-between text-[11px] pt-2.5 border-t border-slate-200 dark:border-slate-800/80">
                 <div className="flex items-center gap-1.5 text-slate-600 dark:text-slate-400">
                   <Cpu className="h-3.5 w-3.5 text-purple-500" />
-                  <span>Model: <b>FlowForge RAG 2.5</b></span>
+                  <span>Engine: <b className="text-purple-600 dark:text-purple-400 font-bold">FlowForge Agent (Active)</b></span>
                 </div>
                 <div className="flex items-center gap-1 text-[10px] text-slate-500 dark:text-slate-400 font-mono">
                   <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" />

@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import axios from 'axios';
+import { useSearchParams } from 'react-router-dom';
 import { Search, Plus, FolderGit2, CheckCircle2, AlertTriangle, XCircle, RefreshCw, X, LogIn } from 'lucide-react';
 import { repositoryService } from '../services/repositoryService';
-import { Repository } from '../types';
+import { useQuery } from '@tanstack/react-query';
 import { RepoCard } from '../components/RepoCard';
 import { AddRepositoryModal } from '../components/AddRepositoryModal';
 import { GitHubConnectModal } from '../components/GitHubConnectModal';
@@ -11,36 +12,53 @@ import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 
 export const Dashboard: React.FC = () => {
-  const navigate = useNavigate();
-  const { user, selectedRepoNames, setSelectedRepoNames, isAuthenticated } = useAuth();
-  const { success } = useToast();
+  const [searchParams] = useSearchParams();
+  const { user, selectedRepoNames, setSelectedRepoNames, isAuthenticated, logout } = useAuth();
+  const { info } = useToast();
 
-  const [repositories, setRepositories] = useState<Repository[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [refreshVersion, setRefreshVersion] = useState(0);
   const [search, setSearch] = useState('');
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isConnectModalOpen, setIsConnectModalOpen] = useState(false);
 
-  const fetchRepos = async (forceRefresh = false) => {
-    setLoading(true);
-    try {
-      const data = await repositoryService.getRepositories(forceRefresh);
-      setRepositories(data);
+  const {
+    data: repositories = [],
+    isLoading: loading,
+    error: repositoryError,
+  } = useQuery({
+    queryKey: ['repositories', user?.id, refreshVersion],
+    queryFn: () => repositoryService.getRepositories(refreshVersion > 0),
+    enabled: Boolean(user),
+    placeholderData: (previousData) => previousData,
+  });
 
-      // If no selected repo names are in storage yet, select all fetched repos
-      if (selectedRepoNames.length === 0 && data.length > 0) {
-        setSelectedRepoNames(data.map((r) => r.name));
-      }
-    } catch (err) {
-      console.error('Error fetching repositories:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const authConnected = searchParams.get('auth') === 'connected';
 
   useEffect(() => {
-    fetchRepos();
-  }, [user]);
+    if (!authConnected) return;
+    const callbackUrl = new URL(window.location.href);
+    callbackUrl.searchParams.delete('auth');
+    window.history.replaceState(window.history.state, '', `${callbackUrl.pathname}${callbackUrl.search}${callbackUrl.hash}`);
+  }, [authConnected]);
+
+  const refreshRepositories = () => {
+    setRefreshVersion((version) => version + 1);
+    info('Refreshing repositories from GitHub');
+  };
+
+  const errorStatus = axios.isAxiosError(repositoryError) ? repositoryError.response?.status : undefined;
+  const loadError = repositoryError
+    ? errorStatus === 401
+      ? 'session'
+      : errorStatus === 403
+        ? 'access'
+        : 'network'
+    : null;
+
+  const handleSwitchAccount = async () => {
+    await logout();
+    window.location.assign(`${import.meta.env.VITE_API_URL || '/api'}/auth/github/login`);
+  };
 
   const handleSavePermissions = (enabledNames: string[]) => {
     setSelectedRepoNames(enabledNames);
@@ -78,6 +96,41 @@ export const Dashboard: React.FC = () => {
 
   return (
     <div className="space-y-8 max-w-7xl mx-auto py-2">
+      {authConnected && (
+        <p className="rounded-lg border border-emerald-500/30 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800 dark:bg-emerald-950/20 dark:text-emerald-200" role="status">
+          You are signed in with GitHub. Your repositories are loading.
+        </p>
+      )}
+      {loadError && (
+        <section className="flex flex-col gap-4 rounded-xl border border-amber-500/30 bg-amber-50 p-4 dark:bg-amber-950/20 sm:flex-row sm:items-center sm:justify-between" role="alert">
+          <div>
+            <h2 className="text-sm font-bold text-slate-900 dark:text-white">
+              {loadError === 'session' ? 'Your sign-in has expired' : loadError === 'access' ? 'GitHub access is limited' : 'Repositories could not be loaded'}
+            </h2>
+            <p className="mt-1 max-w-2xl text-xs leading-relaxed text-slate-600 dark:text-slate-300">
+              {loadError === 'session'
+                ? 'Reconnect with GitHub to continue using your workspace.'
+                : loadError === 'access'
+                  ? 'GitHub did not allow this repository request. Review FlowForge access in GitHub, then refresh. Any repositories already available remain usable.'
+                  : 'Check your connection and try refreshing. Your existing workspace data remains available if it was loaded earlier.'}
+            </p>
+          </div>
+          {loadError === 'session' ? (
+            <button onClick={handleSwitchAccount} className="shrink-0 rounded-lg bg-purple-600 px-4 py-2.5 text-xs font-bold text-white hover:bg-purple-700">
+              Continue with GitHub
+            </button>
+          ) : loadError === 'access' ? (
+            <a href="https://github.com/settings/applications" target="_blank" rel="noreferrer" className="shrink-0 rounded-lg border border-slate-300 px-4 py-2.5 text-center text-xs font-bold text-slate-700 hover:bg-white dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-900">
+              Review GitHub access
+            </a>
+          ) : (
+            <button onClick={refreshRepositories} className="shrink-0 rounded-lg border border-slate-300 px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-white dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-900">
+              Try again
+            </button>
+          )}
+        </section>
+      )}
+
       {/* Top Stat Summary Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
@@ -109,6 +162,12 @@ export const Dashboard: React.FC = () => {
           subtitle="In progress automated checks"
         />
       </div>
+
+      {repositories.some((repository) => repository.lastWorkflowStatus === 'unknown') && (
+        <p className="-mt-5 text-xs leading-relaxed text-slate-500 dark:text-slate-400" role="status">
+          Some repositories do not have workflow data available yet. Actions may be disabled or GitHub may limit access; other available repositories remain usable.
+        </p>
+      )}
 
       {/* Header Row: "Your repositories" + search/filter + "Add repository" button */}
       <div className="flex flex-wrap items-center justify-between gap-4 pt-2">
@@ -150,10 +209,7 @@ export const Dashboard: React.FC = () => {
 
           {/* Refresh button */}
           <button
-            onClick={() => {
-              fetchRepos(true);
-              success('Refreshed repositories from GitHub');
-            }}
+            onClick={refreshRepositories}
             title="Refresh from GitHub"
             className="p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0E121D] text-slate-600 dark:text-slate-300 hover:text-purple-600 dark:hover:text-purple-400 hover:border-purple-500/30 transition-colors shadow-sm"
           >
@@ -189,21 +245,40 @@ export const Dashboard: React.FC = () => {
           </div>
           <div className="space-y-1">
             <h3 className="text-base font-bold text-slate-900 dark:text-white">
-              {isAuthenticated ? 'No repositories found' : 'GitHub Not Connected'}
+              {search.trim()
+                ? 'No repositories match your search'
+                : repositories.length === 0
+                  ? 'No repositories are available'
+                  : isAuthenticated
+                    ? 'No repositories selected'
+                    : 'GitHub Not Connected'}
             </h3>
             <p className="text-xs text-slate-500 dark:text-slate-400 max-w-sm mx-auto">
-              {isAuthenticated
-                ? 'No repositories match your current filter, or you haven’t authorized any repositories yet.'
-                : 'Connect your GitHub account with a Personal Access Token or username to load your real repositories.'}
+              {search.trim()
+                ? 'Try a different search term or clear the search to see all available repositories.'
+                : repositories.length === 0
+                  ? 'No repositories are visible to this GitHub account. Check repository access, create a repository, or connect a different account.'
+                  : 'Choose repositories in Manage repos to add them to your dashboard.'}
             </p>
           </div>
-          <button
-            onClick={() => (isAuthenticated ? setIsAddModalOpen(true) : setIsConnectModalOpen(true))}
-            className="inline-flex items-center gap-2 rounded-xl bg-purple-600 hover:bg-purple-700 px-5 py-2.5 text-xs font-bold text-white shadow-md transition-all"
-          >
-            {isAuthenticated ? <Plus className="h-4 w-4" /> : <LogIn className="h-4 w-4" />}
-            <span>{isAuthenticated ? 'Select Repositories' : 'Connect with GitHub'}</span>
-          </button>
+          {repositories.length === 0 && !search.trim() ? (
+            <div className="flex flex-wrap justify-center gap-3">
+              <a href="https://github.com/new" target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-lg bg-purple-600 px-5 py-2.5 text-xs font-bold text-white hover:bg-purple-700">
+                Create a GitHub repository
+              </a>
+              <button onClick={handleSwitchAccount} className="rounded-lg border border-slate-300 px-5 py-2.5 text-xs font-bold text-slate-700 hover:bg-white dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-900">
+                Use another account
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => (isAuthenticated ? setIsAddModalOpen(true) : setIsConnectModalOpen(true))}
+              className="inline-flex items-center gap-2 rounded-lg bg-purple-600 hover:bg-purple-700 px-5 py-2.5 text-xs font-bold text-white shadow-md transition-all"
+            >
+              {isAuthenticated ? <Plus className="h-4 w-4" /> : <LogIn className="h-4 w-4" />}
+              <span>{isAuthenticated ? 'Manage repositories' : 'Continue with GitHub'}</span>
+            </button>
+          )}
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">

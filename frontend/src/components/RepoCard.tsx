@@ -16,7 +16,7 @@ export const RepoCard: React.FC<RepoCardProps> = ({ repo }) => {
     <motion.div
       whileHover={{ y: -4, scale: 1.01 }}
       transition={{ duration: 0.2 }}
-      onClick={() => navigate(`/repositories/${repo.name}`)}
+      onClick={() => navigate(`/repositories/${encodeURIComponent(repo.name)}`)}
       className="group relative cursor-pointer rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0E121D] p-5 shadow-sm hover:border-purple-500/50 dark:hover:border-purple-500/50 hover:shadow-md transition-all flex flex-col justify-between"
     >
       {/* Top Header */}

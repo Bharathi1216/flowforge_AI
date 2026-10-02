@@ -4,6 +4,8 @@ This directory is designated for the FlowForge AI FastAPI backend.
 
 ## Local Setup
 
+Use Python 3.11 or 3.12 for local development. The free-threaded Python 3.13t build is not compatible with the current `cryptography` stack used here.
+
 Copy `.env.example` to `.env` and replace the GitHub OAuth App placeholders before using GitHub login:
 
 - `GITHUB_CLIENT_ID`: the OAuth App client ID from GitHub

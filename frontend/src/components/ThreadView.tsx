@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
+import axios from 'axios';
 import { 
   MessageSquare, Plus, Send, Pin, ArrowLeft, 
-  Terminal, Bot, Check, Copy, Sparkles, MessageSquarePlus
+  Terminal, Bot, Check, Copy, Sparkles
 } from 'lucide-react';
 import { Discussion, Comment } from '../types';
 import { AIExplanationCard } from './AIExplanationCard';
@@ -14,8 +15,9 @@ interface ThreadViewProps {
   selectedDiscussion: Discussion | null;
   comments: Comment[];
   onSelectDiscussion: (disc: Discussion) => void;
-  onCreateDiscussion: (title: string, content: string) => void;
-  onAddComment: (discId: string, text: string) => void;
+  onCreateDiscussion: (title: string, content: string) => Promise<boolean>;
+  onAddComment: (discId: string, text: string) => Promise<void>;
+  onResolveDiscussion?: (discId: string, status: 'resolved' | 'open') => Promise<void>;
   initialNewThreadTitle?: string;
   initialNewThreadContent?: string;
 }
@@ -27,51 +29,64 @@ export const ThreadView: React.FC<ThreadViewProps> = ({
   onSelectDiscussion,
   onCreateDiscussion,
   onAddComment,
+  onResolveDiscussion,
   initialNewThreadTitle = '',
   initialNewThreadContent = ''
 }) => {
-  const { success } = useToast();
+  const { success, error: showError } = useToast();
   const { openAssistant } = useAIAssistant();
   const [isCreating, setIsCreating] = useState(!!initialNewThreadTitle);
   const [newTitle, setNewTitle] = useState(initialNewThreadTitle);
   const [newContent, setNewContent] = useState(initialNewThreadContent);
   const [replyText, setReplyText] = useState('');
-  const [isAIResponding, setIsAIResponding] = useState(false);
+  const [isResolving, setIsResolving] = useState(false);
   const [copiedFix, setCopiedFix] = useState(false);
 
-  const handleCreate = (e: React.FormEvent) => {
+  const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTitle.trim() || !newContent.trim()) return;
-    onCreateDiscussion(newTitle, newContent);
-    success('Discussion thread published to team', 'Thread Created');
-    setNewTitle('');
-    setNewContent('');
-    setIsCreating(false);
+    try {
+      const created = await onCreateDiscussion(newTitle, newContent);
+      if (!created) return;
+      success('Discussion thread published to GitHub.', 'Thread Created');
+      setNewTitle('');
+      setNewContent('');
+      setIsCreating(false);
+    } catch (error) {
+      const detail = axios.isAxiosError(error) ? error.response?.data?.detail : null;
+      showError(typeof detail === 'string' ? detail : 'Could not create a discussion thread.', 'Thread not created');
+    }
   };
 
-  const handleSendReply = (e: React.FormEvent) => {
+  const handleToggleResolve = async () => {
+    if (!selectedDiscussion || !onResolveDiscussion) return;
+    setIsResolving(true);
+    try {
+      const nextStatus = selectedDiscussion.status === 'resolved' ? 'open' : 'resolved';
+      await onResolveDiscussion(selectedDiscussion.id, nextStatus);
+      success(
+        nextStatus === 'resolved' ? 'Discussion thread resolved on GitHub.' : 'Discussion thread reopened on GitHub.',
+        nextStatus === 'resolved' ? 'Thread Resolved' : 'Thread Reopened'
+      );
+    } catch (error) {
+      const detail = axios.isAxiosError(error) ? error.response?.data?.detail : null;
+      showError(typeof detail === 'string' ? detail : 'Could not update thread status.', 'Error');
+    } finally {
+      setIsResolving(false);
+    }
+  };
+
+  const handleSendReply = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!replyText.trim() || !selectedDiscussion) return;
     const userText = replyText;
-    onAddComment(selectedDiscussion.id, userText);
-    setReplyText('');
-    success('Message sent to thread', 'Reply Posted');
-
-    if (userText.includes('?') || userText.toLowerCase().includes('how') || userText.toLowerCase().includes('why') || userText.toLowerCase().includes('fix') || userText.toLowerCase().includes('ai')) {
-      setIsAIResponding(true);
-      setTimeout(() => {
-        setIsAIResponding(false);
-        onAddComment(
-          selectedDiscussion.id,
-          `🤖 **FlowForge AI Assistant:**
-To resolve this peer dependency conflict in GitHub Actions, update your \`.github/workflows/ci.yml\` workflow step:
-\`\`\`yaml
-- name: Install dependencies
-  run: npm ci --legacy-peer-deps
-\`\`\`
-Or pin \`react\` to \`^18.2.0\` and \`react-dom\` to \`^18.2.0\` in your root \`package.json\`.`
-        );
-      }, 1000);
+    try {
+      await onAddComment(selectedDiscussion.id, userText);
+      setReplyText('');
+      success('Message sent to the GitHub thread.', 'Reply Posted');
+    } catch (error) {
+      const detail = axios.isAxiosError(error) ? error.response?.data?.detail : null;
+      showError(typeof detail === 'string' ? detail : 'Could not post this reply.', 'Reply not posted');
     }
   };
 
@@ -244,9 +259,28 @@ npm install react@^18.2.0 react-dom@^18.2.0`;
                 </div>
 
                 <div className="flex items-center gap-2">
-                  <span className="rounded-full border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 px-2.5 py-0.5 text-[10px] font-mono font-bold text-rose-700 dark:text-rose-300">
-                    Attached Failure Logs
+                  <span className={`rounded-full border px-2.5 py-0.5 text-[10px] font-mono font-bold ${
+                    selectedDiscussion.status === 'resolved'
+                      ? 'border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300'
+                      : 'border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300'
+                  }`}>
+                    {selectedDiscussion.status === 'resolved' ? 'Resolved' : 'Open'}
                   </span>
+                  {onResolveDiscussion && (
+                    <button
+                      type="button"
+                      disabled={isResolving}
+                      onClick={handleToggleResolve}
+                      className={`flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-bold border transition-all ${
+                        selectedDiscussion.status === 'resolved'
+                          ? 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-700'
+                          : 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+                      }`}
+                    >
+                      <Check className="h-3 w-3" />
+                      <span>{selectedDiscussion.status === 'resolved' ? 'Reopen' : 'Resolve'}</span>
+                    </button>
+                  )}
                   <button
                     onClick={() => openAssistant(`Analyze thread failure: ${selectedDiscussion.title}\n\n${selectedDiscussion.content}`)}
                     className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-purple-50 dark:bg-purple-950/40 hover:bg-purple-100 dark:hover:bg-purple-900/50 border border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-300 text-[11px] font-bold transition-all"
@@ -347,13 +381,6 @@ npm install react@^18.2.0 react-dom@^18.2.0`;
                   </div>
                 );
               })}
-
-              {isAIResponding && (
-                <div className="flex items-center gap-2 p-2.5 rounded-xl bg-purple-50 dark:bg-purple-950/30 border border-purple-200 dark:border-purple-800 text-xs text-purple-700 dark:text-purple-300 font-medium">
-                  <Bot className="h-4 w-4 animate-bounce text-purple-600" />
-                  <span>FlowForge AI Assistant is analyzing the failure log and formulating a fix...</span>
-                </div>
-              )}
             </div>
 
             {/* Developer Query / Chat Input Bar */}

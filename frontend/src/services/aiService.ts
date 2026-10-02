@@ -1,45 +1,72 @@
 import { FailureAnalysis, AIMessage, WorkflowRun } from '../types';
-import { githubApiService } from './githubApiService';
+import apiClient from './apiClient';
 
 export const aiService = {
   async analyzeFailure(runId: string, runData?: WorkflowRun, repoName?: string): Promise<FailureAnalysis | null> {
-    if (runData) {
-      return githubApiService.analyzeWorkflowFailure(runData, repoName || 'repository');
+    const targetRepo = repoName || 'repository';
+    try {
+      const response = await apiClient.post<FailureAnalysis>(
+        `/repositories/${encodeURIComponent(targetRepo)}/workflows/${encodeURIComponent(runId)}/analysis`
+      );
+      return response.data;
+    } catch (err) {
+      console.warn('Backend AI analysis endpoint unavailable, using run diagnostic info:', err);
+      if (runData?.diagnosticInfo) {
+        return {
+          id: `diag-${runId}`,
+          runId,
+          title: `Diagnostic Analysis for Run #${runData.runNumber}`,
+          summary: runData.diagnosticInfo.errorSnippet || `Failure in workflow ${runData.name} on branch ${runData.branch}.`,
+          rootCause: runData.diagnosticInfo.rootCause || 'Workflow step failed with non-zero exit code.',
+          suggestedFix: runData.diagnosticInfo.suggestedFix || 'Review step execution logs and test locally.',
+          confidence: 88,
+          relevantDocs: [{ title: 'GitHub Actions Documentation', url: 'https://docs.github.com/en/actions' }],
+          previousDiscussions: [],
+        };
+      }
+      return null;
     }
-    void runId;
-    return null;
   },
 
   async chatWithAssistant(repoId: string, messages: AIMessage[]): Promise<AIMessage> {
-    await new Promise(resolve => setTimeout(resolve, 900));
-    const lastMsg = messages[messages.length - 1].content.toLowerCase();
-    const curUser = githubApiService.getSavedUsername() || 'user';
+    try {
+      const response = await apiClient.post<AIMessage>(
+        `/repositories/${encodeURIComponent(repoId)}/ai/chat`,
+        {
+          messages: messages.map((m) => ({
+            id: m.id,
+            role: m.role,
+            content: m.content,
+            timestamp: m.timestamp,
+          })),
+        }
+      );
+      return response.data;
+    } catch (err) {
+      console.warn('Backend AI chat request failed, falling back to local assistant:', err);
+      const lastMsg = messages[messages.length - 1]?.content.toLowerCase() || '';
+      let reply = `I am your FlowForge AI assistant connected to **${repoId}**. Ask me about workflow failure diagnostics, repository architecture, or collaborators.`;
+      const sources: string[] = [`Repository: ${repoId}`];
 
-    let reply = `I am your FlowForge AI assistant connected to GitHub repository **${repoId}** (Owner: @${curUser}). Ask me about failed workflow runs, error patterns, or repository architecture.`;
-    const sources: string[] = [`Repository: ${repoId}`];
+      if (lastMsg.includes('fail') || lastMsg.includes('error') || lastMsg.includes('why')) {
+        reply = `To inspect failures in **${repoId}**, switch to the **Failure Analysis** tab to view step-by-step logs, or use the **Workflows** tab to trigger a rerun.`;
+        sources.push('GitHub Actions Runs API');
+      } else if (lastMsg.includes('who') || lastMsg.includes('team') || lastMsg.includes('contributor')) {
+        reply = `Active team members and contributors for **${repoId}** are listed in the **Team** tab with recent contribution counts.`;
+        sources.push('GitHub Contributors API');
+      }
 
-    if (lastMsg.includes('fail') || lastMsg.includes('error') || lastMsg.includes('run')) {
-      reply = `I checked the latest GitHub Actions status for **${repoId}**. If a workflow failed, you can inspect the step-by-step terminal logs, view the highlighted error line, and trigger an automated AI failure diagnostic directly in the Failure Analysis tab.`;
-      sources.push('GitHub Actions Runs API', 'Terminal Logs');
-    } else if (lastMsg.includes('who') || lastMsg.includes('contributor') || lastMsg.includes('team')) {
-      reply = `The active contributors and maintainers for **${repoId}** are synchronized live from GitHub. Check the **Team** tab to view contributor activity and issue resolution counts.`;
-      sources.push('GitHub Contributors API');
-    } else if (lastMsg.includes('how') || lastMsg.includes('help') || lastMsg.includes('fix')) {
-      reply = `To resolve CI/CD build issues on **${repoId}**:\n1. Open the **Failure Analysis** tab.\n2. Review the detected root cause and suggested patch diff.\n3. Create an Issue Discussion thread to collaborate with your team.`;
-      sources.push('FlowForge Diagnostic Engine');
+      return {
+        id: `ai-${Date.now()}`,
+        role: 'assistant',
+        content: reply,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        sources,
+      };
     }
-
-    return {
-      id: `ai-${Date.now()}`,
-      role: 'assistant',
-      content: reply,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      sources,
-    };
   },
 
   async generateOnboardingGuide(repoId: string) {
-    await new Promise(resolve => setTimeout(resolve, 1000));
     return {
       repoName: repoId,
       architectureSummary: `Active GitHub workspace for ${repoId} monitored with automated CI/CD intelligence.`,
@@ -48,10 +75,11 @@ export const aiService = {
         { path: 'src/', purpose: 'Core application source code' },
       ],
       setupSteps: [
-        { step: 1, title: 'Clone Repository', command: `git clone https://github.com/${githubApiService.getSavedUsername() || 'owner'}/${repoId}.git` },
+        { step: 1, title: 'Clone Repository', command: `git clone https://github.com/${repoId}.git` },
         { step: 2, title: 'Install Dependencies', command: 'npm install' },
         { step: 3, title: 'Start Development Server', command: 'npm run dev' },
       ],
     };
   }
 };
+
