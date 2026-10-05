@@ -7,16 +7,28 @@ logger = logging.getLogger(__name__)
 # Common regex patterns to deterministically parse error signatures
 EXCEPTION_PATTERNS = [
     re.compile(r"([A-Za-z0-9_]+Error):\s*(.+)", re.IGNORECASE),
+    re.compile(r"(error TS\d+):\s*(.+)", re.IGNORECASE),
     re.compile(r"(Cannot find module\s*['\"]([^'\"]+)['\"])", re.IGNORECASE),
     re.compile(r"(ModuleNotFoundError:\s*No module named\s*['\"]([^'\"]+)['\"])", re.IGNORECASE),
     re.compile(r"(SyntaxError:\s*.+)", re.IGNORECASE),
     re.compile(r"(TypeError:\s*.+)", re.IGNORECASE),
     re.compile(r"(AssertionError:\s*.+)", re.IGNORECASE),
+    re.compile(r"(KeyError:\s*.+)", re.IGNORECASE),
+    re.compile(r"(ImportError:\s*.+)", re.IGNORECASE),
+    re.compile(r"(IndentationError:\s*.+)", re.IGNORECASE),
     re.compile(r"(npm ERR!\s*code\s*([A-Z0-9_]+))", re.IGNORECASE),
     re.compile(r"(npm ERR!\s*ERESOLVE\s*.+)", re.IGNORECASE),
     re.compile(r"(ENOENT:\s*no such file or directory[^\n]+)", re.IGNORECASE),
     re.compile(r"(EACCES:\s*permission denied[^\n]+)", re.IGNORECASE),
+    re.compile(r"(EADDRINUSE:\s*address already in use[^\n]+)", re.IGNORECASE),
+    re.compile(r"(ECONNREFUSED:\s*connection refused[^\n]+)", re.IGNORECASE),
     re.compile(r"(command not found:\s*([A-Za-z0-9_-]+))", re.IGNORECASE),
+    re.compile(r"(Required secret\s+['\"]?([A-Za-z0-9_]+)['\"]?\s+is not set)", re.IGNORECASE),
+    re.compile(r"([A-Za-z0-9_]+_is_not_set)", re.IGNORECASE),
+    re.compile(r"(panic:\s*(.+))", re.IGNORECASE),
+    re.compile(r"(fatal:\s*(.+))", re.IGNORECASE),
+    re.compile(r"(FAIL\s+([A-Za-z0-9_./\\-]+\.(?:ts|tsx|js|jsx|py)))", re.IGNORECASE),
+    re.compile(r"(FAILED\s+([A-Za-z0-9_./\\-]+::[A-Za-z0-9_]+))", re.IGNORECASE),
 ]
 
 FILE_LINE_PATTERNS = [
