@@ -55,42 +55,6 @@ def _parse_result(text: str) -> dict:
     return result
 
 
-def _heuristic_analysis(repository: Repository, workflow_run: WorkflowRun, failures: list[FailureLog]) -> dict:
-    step_names = [f.step_name for f in failures if f.step_name] or ["Workflow Step"]
-    main_step = step_names[0]
-    error_snippets = [f.error_snippet for f in failures if f.error_snippet]
-    error_text = error_snippets[0] if error_snippets else (failures[0].raw_logs or "")[:500] if failures else ""
-
-    lowered = error_text.lower()
-    if "eresolve" in lowered or "peer" in lowered or "conflict" in lowered:
-        root_cause = f"Dependency peer conflict detected during step '{main_step}'. Package requirements could not be resolved."
-        suggested_fix = "Run `npm install --legacy-peer-deps` or align conflicting dependencies in package.json."
-        summary = f"Workflow '{workflow_run.workflow_name}' failed at '{main_step}' due to dependency resolution conflicts."
-    elif "test" in lowered or "failed test" in lowered or "assertion" in lowered:
-        root_cause = f"Automated test assertions failed in step '{main_step}'."
-        suggested_fix = "Reproduce the test suite locally using the repository test command and review test outputs."
-        summary = f"Workflow '{workflow_run.workflow_name}' encountered failing unit/integration tests in '{main_step}'."
-    elif "syntaxerror" in lowered or "syntax error" in lowered or "typeerror" in lowered:
-        root_cause = f"Compilation or syntax error raised during '{main_step}'."
-        suggested_fix = "Check recent commit diffs for type mismatches, syntax errors, or unhandled imports."
-        summary = f"Build failure triggered by code compilation error in step '{main_step}'."
-    elif "not found" in lowered or "command not found" in lowered or "enoent" in lowered:
-        root_cause = f"Missing executable, file, or environment path in step '{main_step}'."
-        suggested_fix = "Verify runner setup steps, installed toolchains, and environment PATH configurations."
-        summary = f"Execution halted because a required binary or file was not found in step '{main_step}'."
-    else:
-        root_cause = f"Step '{main_step}' exited with non-zero exit status during workflow execution."
-        suggested_fix = "Inspect the full job terminal logs, verify repository secrets, and ensure build scripts succeed locally."
-        summary = f"Workflow '{workflow_run.workflow_name}' (Run #{workflow_run.run_number}) failed on branch '{workflow_run.branch}'."
-
-    return {
-        "summary": summary,
-        "rootCause": root_cause,
-        "suggestedFix": suggested_fix,
-        "confidence": 88,
-    }
-
-
 def _find_repo(repo_id: str, user_id: int, db: Session) -> Repository | None:
     repo_filter = (Repository.user_id == user_id) & (
         (Repository.github_repo_id == repo_id) | (Repository.name == repo_id)
@@ -136,7 +100,7 @@ async def analyze_failure(
         )
         log_text = f"Workflow '{workflow_run.workflow_name}' failed.\nExecuted Steps:\n{step_details}"
 
-    # Query ChromaDB vector store for similar historical failures
+    # Query Supabase pgvector for similar historical failures
     from app.services.vector_store import vector_store
 
     error_snippet_query = ""
@@ -154,13 +118,11 @@ async def analyze_failure(
     )
     similar_match = similar_runs[0] if similar_runs else None
 
-    # If AI key is configured, use it for deep semantic analysis
-    if settings.GEMINI_API_KEY and (log_text.strip() or workflow_run.commit_message):
-        similar_context = ""
-        if similar_match:
-            similar_context = f"\nSemantic Match: A similar failure occurred in Run #{similar_match['runNumber']} (Similarity: {similar_match['similarityPercent']}%):\n{similar_match['document'][:800]}\n"
+    similar_context = ""
+    if similar_match:
+        similar_context = f"\nSemantic Match: A similar failure occurred in Run #{similar_match['runNumber']} (Similarity: {similar_match['similarityPercent']}%):\n{similar_match['document'][:800]}\n"
 
-        prompt = f"""You are the FlowForge AI Diagnostic Engine, an advanced CI/CD failure diagnostic intelligence system for GitHub Actions.
+    prompt = f"""You are the FlowForge AI Diagnostic Engine, an advanced CI/CD failure diagnostic intelligence system for GitHub Actions.
 Analyze the workflow failure details and error logs below.
 Do not invent facts that are not present in the logs or run details.
 Do NOT mention third-party AI provider names or model names (e.g. do not mention Gemini, OpenAI, Claude). Always refer to yourself as FlowForge AI Diagnostic Engine.
@@ -179,13 +141,10 @@ Commit: {workflow_run.commit_sha or 'unknown'} ({workflow_run.commit_message or 
 {similar_context}
 Logs & Failure Context:
 {log_text or f"Workflow '{workflow_run.workflow_name}' failed with status '{workflow_run.status}' (conclusion: '{workflow_run.conclusion}')."}"""
-        try:
-            result = _parse_result(await _generate_gemini_response(prompt))
-        except Exception:
-            result = _heuristic_analysis(repository, workflow_run, failures)
-    else:
-        # Graceful heuristic fallback if AI key is not configured or logs were not parsed
-        result = _heuristic_analysis(repository, workflow_run, failures)
+    try:
+        result = _parse_result(await _generate_gemini_response(prompt))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Gemini root-cause analysis failed") from exc
 
     confidence = max(0, min(100, int(result["confidence"])))
     if failures:
@@ -204,7 +163,7 @@ Logs & Failure Context:
         db.add(new_failure)
     db.commit()
 
-    # Index into ChromaDB vector store with verified root cause and suggested fix
+    # Index into Supabase pgvector with verified root cause and suggested fix
     try:
         step_name = failures[0].step_name if failures and failures[0].step_name else "GitHub Actions"
         vector_store.index_failure(
@@ -266,7 +225,7 @@ async def chat_with_assistant(
     last_user_message = next((m.content for m in reversed(payload.messages) if m.role == "user"), "")
     sources = [f"Repository: {repository.full_name}"]
 
-    # Retrieve RAG semantic context from ChromaDB
+    # Retrieve RAG semantic context from Supabase pgvector
     from app.services.vector_store import vector_store
 
     rag_snippets = vector_store.search_context(repo_id=str(repository.id), query=last_user_message, limit=3)
@@ -330,4 +289,3 @@ Never mention third-party AI provider or model names (e.g. Gemini, OpenAI, Claud
         "timestamp": datetime.utcnow().strftime("%H:%M"),
         "sources": sources,
     }
-

@@ -34,14 +34,14 @@ async def get_knowledge_base(
     if not repository:
         raise HTTPException(status_code=404, detail="Repository not found")
 
-    # 1. Fetch semantically indexed knowledge items from ChromaDB
-    chroma_items = vector_store.get_knowledge_base(str(repository.id))
+    # 1. Fetch semantically indexed knowledge items from Supabase pgvector
+    vector_items = vector_store.get_knowledge_base(str(repository.id))
 
     # 2. Fetch database failure logs that have diagnosed fixes
     db_items: list[dict[str, Any]] = []
     seen_step_fixes = set()
 
-    for item in chroma_items:
+    for item in vector_items:
         seen_step_fixes.add((item.get("errorType"), item.get("suggestedFix")[:50]))
 
     failure_runs = (
@@ -82,4 +82,4 @@ async def get_knowledge_base(
         "category": "docs",
     }
 
-    return chroma_items + db_items + [docs_item]
+    return vector_items + db_items + [docs_item]

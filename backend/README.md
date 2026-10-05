@@ -23,7 +23,7 @@ Without these values, the login endpoint returns `503 GitHub OAuth credentials a
 - Proxy and control flow for running Celery tasks.
 - API endpoints: `/api/repositories`, `/api/workflows`, etc.
 
-The local SQLite fallback is stored in `database/local/flowforge.db`. Set `DATABASE_URL` in `.env` to use PostgreSQL instead.
+`DATABASE_URL` must point to the Supabase PostgreSQL database. The backend does not fall back to local SQLite, because a fallback can display stale or cross-account repository data. If Supabase is unavailable or credentials are invalid, startup fails with an explicit database error.
 
 ## GitHub Actions Webhooks
 

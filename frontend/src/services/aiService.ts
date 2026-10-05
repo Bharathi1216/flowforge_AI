@@ -19,7 +19,6 @@ export const aiService = {
           summary: runData.diagnosticInfo.errorSnippet || `Failure in workflow ${runData.name} on branch ${runData.branch}.`,
           rootCause: runData.diagnosticInfo.rootCause || 'Workflow step failed with non-zero exit code.',
           suggestedFix: runData.diagnosticInfo.suggestedFix || 'Review step execution logs and test locally.',
-          confidence: 88,
           relevantDocs: [{ title: 'GitHub Actions Documentation', url: 'https://docs.github.com/en/actions' }],
           previousDiscussions: [],
         };
@@ -82,4 +81,3 @@ export const aiService = {
     };
   }
 };
-

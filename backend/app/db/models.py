@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import relationship
 from app.db.database import Base
 
@@ -24,6 +24,9 @@ class User(Base):
 
 class Repository(Base):
     __tablename__ = "repositories"
+    __table_args__ = (
+        UniqueConstraint("user_id", "github_repo_id", name="uq_repository_user_github_id"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
@@ -46,10 +49,13 @@ class Repository(Base):
 
 class WorkflowRun(Base):
     __tablename__ = "workflow_runs"
+    __table_args__ = (
+        UniqueConstraint("repository_id", "github_run_id", name="uq_workflow_run_repository_github_id"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     repository_id = Column(Integer, ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False)
-    github_run_id = Column(String(100), unique=True, index=True, nullable=False)
+    github_run_id = Column(String(100), index=True, nullable=False)
     workflow_name = Column(String(255), nullable=False)
     run_number = Column(Integer, nullable=False)
     status = Column(String(50), nullable=False) # queued, in_progress, completed, failed, success, cancelled
@@ -105,11 +111,15 @@ class FailureLog(Base):
 
 class Discussion(Base):
     __tablename__ = "discussions"
+    __table_args__ = (
+        UniqueConstraint("repository_id", "github_issue_number", name="uq_discussion_repository_issue"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     repository_id = Column(Integer, ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False)
     workflow_run_id = Column(Integer, ForeignKey("workflow_runs.id", ondelete="SET NULL"), nullable=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
+    github_issue_number = Column(Integer, nullable=True)
     title = Column(String(255), nullable=False)
     content = Column(Text, nullable=True)
     status = Column(String(50), default="open") # open, resolved
@@ -128,6 +138,7 @@ class DiscussionComment(Base):
     id = Column(Integer, primary_key=True, index=True)
     discussion_id = Column(Integer, ForeignKey("discussions.id", ondelete="CASCADE"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
+    github_comment_id = Column(String(100), nullable=True, index=True)
     content = Column(Text, nullable=False)
     log_excerpt = Column(Text, nullable=True)
     is_ai_generated = Column(Boolean, default=False)

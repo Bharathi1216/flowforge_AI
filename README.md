@@ -5,13 +5,13 @@ FlowForge AI is a repository-centric developer collaboration workspace that link
 ## Repository Layout
 - **`frontend/`**: Vite + React + TypeScript + Tailwind CSS client application dashboard.
 - **`backend/`**: FastAPI controller service placeholders.
-- **`ai-service/`**: Gemini models configurations & ChromaDB RAG indexer scripts.
+- **`ai-service/`**: Gemini model configuration and RAG support.
 - **`database/`**: PostgreSQL relational schemas.
 - **`worker/`**: Celery & Redis task broker queues.
 - **`docker/`**: Multi-container compose manifests.
 - **`github-integration/`**: GitHub webhook hooks handler.
 
-Runtime data stays out of source folders: the local SQLite fallback is in `database/local/`, PostgreSQL and Supabase scripts are in `database/`, and frontend/backend dependencies are managed by their respective package and requirements files.
+Runtime application data is stored in Supabase PostgreSQL. PostgreSQL and Supabase scripts are in `database/`, and frontend/backend dependencies are managed by their respective package and requirements files.
 
 ---
 

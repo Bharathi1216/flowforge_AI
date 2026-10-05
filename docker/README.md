@@ -4,4 +4,4 @@ Contains multi-container orchestration configs (docker-compose) to spin up the l
 - web app (frontend + backend)
 - celery workers
 - redis & postgresql
-- chromadb
+- Supabase PostgreSQL with the pgvector extension

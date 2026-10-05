@@ -169,7 +169,13 @@ export const githubApiService = {
         openDiscussionsCount: r.open_issues_count || 0,
         failureCount: 0,
         successRate: null,
-        userAccessRole: r.permissions?.admin ? 'owner' : r.permissions?.push ? 'maintainer' : 'developer',
+        userAccessRole: r.owner?.login === username
+          ? 'owner'
+          : r.permissions?.admin
+            ? 'maintainer'
+            : r.permissions?.push
+              ? 'developer'
+              : 'viewer',
       };
     });
 
@@ -204,7 +210,13 @@ export const githubApiService = {
         openDiscussionsCount: r.open_issues_count || 0,
         failureCount: 0,
         successRate: null,
-        userAccessRole: r.permissions?.admin ? 'owner' : 'maintainer',
+        userAccessRole: r.owner?.login === username
+          ? 'owner'
+          : r.permissions?.admin
+            ? 'maintainer'
+            : r.permissions?.push
+              ? 'developer'
+              : 'viewer',
       };
     } catch {
       return null;
@@ -537,7 +549,6 @@ export const githubApiService = {
       summary: `Automated analysis for GitHub Actions run #${run.runNumber} on commit '${run.commitMessage}' (${run.commitSha}).`,
       rootCause: `Workflow step in '${run.name}' exited with failure during execution on branch ${run.branch}.`,
       suggestedFix: `Inspect the GitHub Actions step logs, test the failing command in your local environment, and verify repository secrets & branch permissions.`,
-      confidence: 95,
       relevantDocs: [
         { title: 'GitHub Actions Documentation', url: 'https://docs.github.com/en/actions' },
         { title: 'Workflow Syntax Reference', url: 'https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions' },

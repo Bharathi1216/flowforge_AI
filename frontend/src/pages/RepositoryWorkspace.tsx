@@ -58,6 +58,13 @@ export const RepositoryWorkspace: React.FC = () => {
     const fetchData = async () => {
       if (!repoId) return;
       setLoading(true);
+      setRepo(null);
+      setWorkflowRuns([]);
+      setSelectedFailureRun(null);
+      setDiscussions([]);
+      setSelectedDiscussion(null);
+      setComments([]);
+      setCollaborators([]);
       try {
         const repoData = await repositoryService.getRepository(repoId);
         setRepo(repoData);
@@ -71,8 +78,10 @@ export const RepositoryWorkspace: React.FC = () => {
 
           setWorkflowRuns(runs);
 
-          const failedRun = runs.find((r) => r.status === 'failed') || runs[0];
-          setSelectedFailureRun(failedRun || null);
+          // Only a failed run belongs in the failure-analysis panel. Selecting
+          // the latest successful run here made the panel show a false failure
+          // while the failing-run count was zero.
+          setSelectedFailureRun(runs.find((r) => r.status === 'failed') || null);
 
           setDiscussions(discList);
           if (discList.length > 0) {

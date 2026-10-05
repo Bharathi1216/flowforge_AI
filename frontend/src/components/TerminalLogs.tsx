@@ -274,7 +274,7 @@ export const TerminalLogs: React.FC<TerminalLogsProps> = ({ runId, logs, onStart
               </div>
               <div>
                 <h3 className="text-base font-bold text-slate-950 dark:text-white">AI Failure Analysis</h3>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Report confidence: {analysisResult.confidence}% • Resolved using repository context</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Resolved using repository context</p>
               </div>
             </div>
             <div className="rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary dark:bg-primary/20">

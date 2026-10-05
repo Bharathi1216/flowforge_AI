@@ -39,15 +39,25 @@ async def github_webhook(
 
     payload = json.loads(body)
     repository_data = payload.get("repository") or {}
+    github_repo_id = repository_data.get("id")
     full_name = repository_data.get("full_name")
     workflow_run = payload.get("workflow_run")
     if not full_name or not workflow_run:
         return {"status": "ignored"}
 
-    repository = db.query(Repository).filter(Repository.full_name == full_name).one_or_none()
-    if not repository:
+    repositories = (
+        db.query(Repository)
+        .filter(
+            Repository.github_repo_id == str(github_repo_id)
+            if github_repo_id is not None
+            else Repository.full_name == full_name
+        )
+        .all()
+    )
+    if not repositories:
         return {"status": "ignored"}
 
-    _upsert_run(repository, workflow_run, db)
+    for repository in repositories:
+        _upsert_run(repository, workflow_run, db)
     db.commit()
     return {"status": "accepted"}

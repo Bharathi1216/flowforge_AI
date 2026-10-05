@@ -119,13 +119,17 @@ def _sync_discussion_to_db(issue: dict, repository: Repository, user: User, db: 
     status_str = "open" if issue.get("state") == "open" else "resolved"
     disc = (
         db.query(Discussion)
-        .filter(Discussion.repository_id == repository.id, Discussion.title == title)
+        .filter(
+            Discussion.repository_id == repository.id,
+            Discussion.github_issue_number == int(issue["number"]),
+        )
         .first()
     )
     if not disc:
         disc = Discussion(
             repository_id=repository.id,
             user_id=user.id,
+            github_issue_number=int(issue["number"]),
             title=title,
             content=issue.get("body") or "",
             status=status_str,
@@ -145,13 +149,17 @@ def _sync_comments_to_db(discussion: Discussion, comments_data: list[dict], user
         c_body = c.get("body") or ""
         existing = (
             db.query(DiscussionComment)
-            .filter(DiscussionComment.discussion_id == discussion.id, DiscussionComment.content == c_body)
+            .filter(
+                DiscussionComment.discussion_id == discussion.id,
+                DiscussionComment.github_comment_id == str(c["id"]),
+            )
             .first()
         )
         if not existing:
             new_comment = DiscussionComment(
                 discussion_id=discussion.id,
                 user_id=user.id,
+                github_comment_id=str(c["id"]),
                 content=c_body,
             )
             db.add(new_comment)

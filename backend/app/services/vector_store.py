@@ -1,36 +1,72 @@
 import logging
-from pathlib import Path
-from typing import Any, Optional
 from datetime import datetime
+from typing import Any, Optional
 
-import chromadb
-from chromadb.config import Settings as ChromaSettings
+from sqlalchemy import text
+
+from app.db.database import engine
+from app.services.embedding_model import embedding_model
 
 logger = logging.getLogger(__name__)
 
-# Persistent ChromaDB directory under database/chroma
-DEFAULT_CHROMA_DIR = Path(__file__).resolve().parents[3] / "database" / "chroma"
+VECTOR_DIMENSIONS = 384
 
 
 class VectorStoreService:
-    def __init__(self, persist_dir: Optional[Path] = None):
-        self.persist_dir = persist_dir or DEFAULT_CHROMA_DIR
-        self.persist_dir.mkdir(parents=True, exist_ok=True)
-        self.client = chromadb.PersistentClient(
-            path=str(self.persist_dir),
-            settings=ChromaSettings(anonymized_telemetry=False),
-        )
-        self.failures_col = self.client.get_or_create_collection(
-            name="workflow_failures",
-            metadata={"description": "CI/CD workflow failure logs and error patterns"},
-        )
-        self.knowledge_col = self.client.get_or_create_collection(
-            name="knowledge_items",
-            metadata={"description": "Semantically indexed failure resolutions and pipeline docs"},
-        )
+    """Supabase pgvector-backed store."""
 
-    def _clean_text(self, text: Optional[str]) -> str:
-        return (text or "").strip()
+    def __init__(self) -> None:
+        self.embedding_model = embedding_model
+
+    def _clean_text(self, value: Optional[str]) -> str:
+        return (value or "").strip()
+
+    def _embed(self, value: str) -> list[float]:
+        embedding = self.embedding_model.embed(value)
+        if len(embedding) != VECTOR_DIMENSIONS:
+            raise ValueError(
+                f"Embedding model returned {len(embedding)} dimensions; "
+                f"expected {VECTOR_DIMENSIONS}"
+            )
+        return [float(item) for item in embedding]
+
+    def _vector_literal(self, embedding: list[float]) -> str:
+        return "[" + ",".join(str(value) for value in embedding) + "]"
+
+    def _upsert(
+        self,
+        item_id: str,
+        collection_name: str,
+        document: str,
+        metadata: dict[str, Any],
+    ) -> None:
+        embedding = self._vector_literal(self._embed(document))
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO vector_documents (
+                        id, collection_name, document, metadata, embedding
+                    )
+                    VALUES (
+                        :id, :collection_name, :document,
+                        CAST(:metadata AS jsonb), CAST(:embedding AS vector)
+                    )
+                    ON CONFLICT (id) DO UPDATE SET
+                        collection_name = EXCLUDED.collection_name,
+                        document = EXCLUDED.document,
+                        metadata = EXCLUDED.metadata,
+                        embedding = EXCLUDED.embedding
+                    """
+                ),
+                {
+                    "id": item_id,
+                    "collection_name": collection_name,
+                    "document": document,
+                    "metadata": __import__("json").dumps(metadata),
+                    "embedding": embedding,
+                },
+            )
 
     def _doc_id(self, repo_id: str, run_id: str, step_name: str) -> str:
         slug = "".join(c if c.isalnum() else "_" for c in step_name.lower())[:30]
@@ -65,24 +101,22 @@ class VectorStoreService:
         if suggested_fix:
             document += f"Suggested Fix:\n{suggested_fix}\n"
 
-        metadata = {
-            "repo_id": str(repo_id),
-            "run_id": str(run_id),
-            "run_number": int(run_number),
-            "workflow_name": workflow_name,
-            "step_name": step_name,
-            "exit_code": int(exit_code),
-            "has_fix": bool(suggested_fix),
-            "timestamp": datetime.utcnow().isoformat(),
-        }
-
-        self.failures_col.upsert(
-            ids=[doc_id],
-            documents=[document],
-            metadatas=[metadata],
+        self._upsert(
+            doc_id,
+            "workflow_failures",
+            document,
+            {
+                "repo_id": str(repo_id),
+                "run_id": str(run_id),
+                "run_number": int(run_number),
+                "workflow_name": workflow_name,
+                "step_name": step_name,
+                "exit_code": int(exit_code),
+                "has_fix": bool(suggested_fix),
+                "timestamp": datetime.utcnow().isoformat(),
+            },
         )
 
-        # If a verified fix is available, also record into knowledge base
         if suggested_fix:
             slug = "".join(c if c.isalnum() else "_" for c in step_name.lower())[:30]
             self.index_knowledge_item(
@@ -96,7 +130,7 @@ class VectorStoreService:
                 similar_run_number=int(run_number),
             )
 
-        logger.info("Indexed failure log in ChromaDB: %s", doc_id)
+        logger.info("Indexed failure log in Supabase pgvector: %s", doc_id)
         return doc_id
 
     def find_similar_failures(
@@ -111,50 +145,58 @@ class VectorStoreService:
         if not cleaned:
             return []
 
-        try:
-            results = self.failures_col.query(
-                query_texts=[cleaned],
-                n_results=limit + 2,
-                where={"repo_id": str(repo_id)},
-            )
-        except Exception as exc:
-            logger.warning("Error querying ChromaDB failures: %s", exc)
-            return []
+        query_vector = self._vector_literal(self._embed(cleaned))
+        conditions = [
+            "collection_name = 'workflow_failures'",
+            "metadata->>'repo_id' = :repo_id",
+        ]
+        parameters: dict[str, Any] = {
+            "repo_id": str(repo_id),
+            "query_vector": query_vector,
+            "limit": max(limit + 2, 1),
+        }
+        if current_run_id:
+            conditions.append("metadata->>'run_id' <> :current_run_id")
+            parameters["current_run_id"] = str(current_run_id)
+
+        with engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    f"""
+                    SELECT
+                        id, document, metadata,
+                        1 - (embedding <=> CAST(:query_vector AS vector))
+                            AS similarity
+                    FROM vector_documents
+                    WHERE {' AND '.join(conditions)}
+                    ORDER BY embedding <=> CAST(:query_vector AS vector)
+                    LIMIT :limit
+                    """
+                ),
+                parameters,
+            ).mappings().all()
 
         matches = []
-        if not results or not results.get("ids") or not results["ids"][0]:
-            return []
-
-        ids = results["ids"][0]
-        distances = results.get("distances", [[]])[0]
-        metadatas = results.get("metadatas", [[]])[0]
-        documents = results.get("documents", [[]])[0]
-
-        for i, match_id in enumerate(ids):
-            meta = metadatas[i] if i < len(metadatas) else {}
-            # Exclude current run
-            if current_run_id and str(meta.get("run_id")) == str(current_run_id):
+        for row in rows:
+            similarity = max(0.0, min(1.0, float(row["similarity"])))
+            if similarity < min_similarity:
                 continue
-
-            dist = distances[i] if i < len(distances) else 1.0
-            similarity = max(0.0, min(1.0, 1.0 - (dist / 2.0)))
-
-            if similarity >= min_similarity:
-                matches.append({
-                    "id": match_id,
-                    "runId": str(meta.get("run_id", "")),
-                    "runNumber": meta.get("run_number"),
-                    "workflowName": meta.get("workflow_name", ""),
-                    "stepName": meta.get("step_name", ""),
+            metadata = row["metadata"] or {}
+            matches.append(
+                {
+                    "id": row["id"],
+                    "runId": str(metadata.get("run_id", "")),
+                    "runNumber": metadata.get("run_number"),
+                    "workflowName": metadata.get("workflow_name", ""),
+                    "stepName": metadata.get("step_name", ""),
                     "similarity": round(similarity, 3),
                     "similarityPercent": int(round(similarity * 100)),
-                    "document": documents[i] if i < len(documents) else "",
-                    "timestamp": meta.get("timestamp", ""),
-                })
-
+                    "document": row["document"] or "",
+                    "timestamp": metadata.get("timestamp", ""),
+                }
+            )
             if len(matches) >= limit:
                 break
-
         return matches
 
     def index_knowledge_item(
@@ -168,63 +210,66 @@ class VectorStoreService:
         similar_run_id: Optional[str] = None,
         similar_run_number: Optional[int] = None,
     ) -> str:
-        document = f"Category: {category}\nError Type: {error_type}\nSuggested Fix: {suggested_fix}"
-        metadata = {
-            "repo_id": str(repo_id),
-            "item_id": item_id,
-            "error_type": error_type,
-            "category": category,
-            "occurrences": int(occurrences),
-            "last_resolved_at": datetime.utcnow().strftime("%b %d, %Y"),
-            "similar_run_id": str(similar_run_id or ""),
-            "similar_run_number": int(similar_run_number or 0),
-        }
-
-        self.knowledge_col.upsert(
-            ids=[item_id],
-            documents=[document],
-            metadatas=metadata,
+        document = (
+            f"Category: {category}\n"
+            f"Error Type: {error_type}\n"
+            f"Suggested Fix: {suggested_fix}"
+        )
+        self._upsert(
+            item_id,
+            "knowledge_items",
+            document,
+            {
+                "repo_id": str(repo_id),
+                "item_id": item_id,
+                "error_type": error_type,
+                "category": category,
+                "occurrences": int(occurrences),
+                "last_resolved_at": datetime.utcnow().strftime("%b %d, %Y"),
+                "similar_run_id": str(similar_run_id or ""),
+                "similar_run_number": int(similar_run_number or 0),
+            },
         )
         return item_id
 
     def get_knowledge_base(self, repo_id: str, limit: int = 25) -> list[dict[str, Any]]:
-        try:
-            results = self.knowledge_col.get(
-                where={"repo_id": str(repo_id)},
-                limit=limit,
-            )
-        except Exception as exc:
-            logger.warning("Error getting ChromaDB knowledge items: %s", exc)
-            return []
+        with engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    """
+                    SELECT id, document, metadata
+                    FROM vector_documents
+                    WHERE collection_name = 'knowledge_items'
+                      AND metadata->>'repo_id' = :repo_id
+                    ORDER BY created_at DESC
+                    LIMIT :limit
+                    """
+                ),
+                {"repo_id": str(repo_id), "limit": limit},
+            ).mappings().all()
 
         items = []
-        if not results or not results.get("ids"):
-            return []
-
-        ids = results["ids"]
-        metadatas = results.get("metadatas", [])
-        documents = results.get("documents", [])
-
-        for i, item_id in enumerate(ids):
-            meta = metadatas[i] if i < len(metadatas) else {}
-            doc = documents[i] if i < len(documents) else ""
-
-            suggested_fix = ""
-            if "Suggested Fix: " in doc:
-                suggested_fix = doc.split("Suggested Fix: ")[-1]
-
-            items.append({
-                "id": item_id,
-                "repoId": str(repo_id),
-                "errorType": meta.get("error_type", "Pipeline Diagnostic"),
-                "occurrences": meta.get("occurrences", 1),
-                "lastResolvedAt": meta.get("last_resolved_at", "Recent"),
-                "suggestedFix": suggested_fix,
-                "similarRunId": meta.get("similar_run_id") or None,
-                "similarRunNumber": meta.get("similar_run_number") or None,
-                "category": meta.get("category", "failure"),
-            })
-
+        for row in rows:
+            metadata = row["metadata"] or {}
+            document = row["document"] or ""
+            suggested_fix = (
+                document.split("Suggested Fix: ", 1)[-1]
+                if "Suggested Fix: " in document
+                else ""
+            )
+            items.append(
+                {
+                    "id": row["id"],
+                    "repoId": str(repo_id),
+                    "errorType": metadata.get("error_type", "Pipeline Diagnostic"),
+                    "occurrences": metadata.get("occurrences", 1),
+                    "lastResolvedAt": metadata.get("last_resolved_at", "Recent"),
+                    "suggestedFix": suggested_fix,
+                    "similarRunId": metadata.get("similar_run_id") or None,
+                    "similarRunNumber": metadata.get("similar_run_number") or None,
+                    "category": metadata.get("category", "failure"),
+                }
+            )
         return items
 
     def search_context(self, repo_id: str, query: str, limit: int = 4) -> list[str]:
@@ -232,31 +277,25 @@ class VectorStoreService:
         if not cleaned:
             return []
 
-        snippets = []
-        try:
-            res_fail = self.failures_col.query(
-                query_texts=[cleaned],
-                n_results=limit,
-                where={"repo_id": str(repo_id)},
-            )
-            if res_fail and res_fail.get("documents") and res_fail["documents"][0]:
-                snippets.extend(res_fail["documents"][0])
-        except Exception:
-            pass
-
-        try:
-            res_kb = self.knowledge_col.query(
-                query_texts=[cleaned],
-                n_results=limit,
-                where={"repo_id": str(repo_id)},
-            )
-            if res_kb and res_kb.get("documents") and res_kb["documents"][0]:
-                snippets.extend(res_kb["documents"][0])
-        except Exception:
-            pass
-
-        return snippets[:limit]
+        query_vector = self._vector_literal(self._embed(cleaned))
+        with engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    """
+                    SELECT document
+                    FROM vector_documents
+                    WHERE metadata->>'repo_id' = :repo_id
+                    ORDER BY embedding <=> CAST(:query_vector AS vector)
+                    LIMIT :limit
+                    """
+                ),
+                {
+                    "repo_id": str(repo_id),
+                    "query_vector": query_vector,
+                    "limit": limit,
+                },
+            ).scalars().all()
+        return [document for document in rows if document]
 
 
-# Global singleton instance
 vector_store = VectorStoreService()

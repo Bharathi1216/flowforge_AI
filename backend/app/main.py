@@ -26,41 +26,6 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/api/diagnostics/chroma")
-def chroma_diagnostics():
-    from app.services.vector_store import vector_store
-    client = vector_store.client
-    cols = client.list_collections()
-    summary = []
-    for col in cols:
-        data = col.get(include=["documents", "metadatas", "embeddings"])
-        ids = data.get("ids", [])
-        docs = data.get("documents", [])
-        metas = data.get("metadatas", [])
-        embeddings = data.get("embeddings", [])
-
-        summary.append({
-            "name": col.name,
-            "count": col.count(),
-            "items": [
-                {
-                    "id": ids[i],
-                    "metadata": metas[i] if metas and i < len(metas) else {},
-                    "document_preview": (docs[i][:300] + "...") if docs and i < len(docs) and len(docs[i]) > 300 else (docs[i] if docs and i < len(docs) else ""),
-                    "embedding_dimensions": len(embeddings[i]) if embeddings is not None and i < len(embeddings) and embeddings[i] is not None else 0,
-                    "sample_vector": [round(float(v), 4) for v in embeddings[i][:5]] if embeddings is not None and i < len(embeddings) and embeddings[i] is not None else []
-                }
-                for i in range(len(ids))
-            ]
-        })
-    return {
-        "status": "healthy",
-        "storage_path": str(vector_store.persist_dir),
-        "total_collections": len(cols),
-        "collections": summary
-    }
-
-
 app.include_router(auth.router, prefix=settings.API_V1_STR)
 app.include_router(repositories.router, prefix=settings.API_V1_STR)
 app.include_router(discussions.router, prefix=settings.API_V1_STR)

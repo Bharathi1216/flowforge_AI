@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { 
   Copy, Check, Terminal, AlertOctagon, MessageSquarePlus, 
-  Sparkles, RefreshCw, CheckCircle2, ShieldAlert, Zap, AlertCircle,
+  Sparkles, RefreshCw, CheckCircle2, Zap, AlertCircle,
   History, GitBranch
 } from 'lucide-react';
 import { WorkflowRun, FailureAnalysis } from '../types';
@@ -125,7 +125,13 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
 
   const handlePush = () => {
     const threadTitle = `[AI Diagnostic] Run #${run.runNumber}: ${run.name} Failure`;
-    const excerpt = analysisData?.summary ? `Summary:\n${analysisData.summary}\n\nRoot Cause:\n${effectiveRootCause}` : effectiveRootCause;
+    const logsForThread = realLogs && realLogs !== 'Loading GitHub Actions logs...'
+      ? realLogs
+      : errorMessage;
+    const analysisExcerpt = analysisData?.summary
+      ? `Summary:\n${analysisData.summary}\n\nRoot Cause:\n${effectiveRootCause}`
+      : effectiveRootCause;
+    const excerpt = `Failure Logs:\n${logsForThread}\n\nFailure Analysis:\n${analysisExcerpt}`;
     onPushToThread(threadTitle, excerpt, effectiveFix);
   };
 
@@ -135,8 +141,6 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
       : `Diagnose this GitHub Actions failure for Run #${run.runNumber} (${run.name}):\n\n${errorMessage}\n\nWhat are the recommended fixes?`;
     openAssistant(promptContext, run.name);
   };
-
-  const confidenceScore = analysisData?.confidence ?? (run.diagnosticInfo?.frequency ? 92 : 88);
 
   return (
     <div className="space-y-5">
@@ -205,20 +209,8 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
             </div>
           </div>
 
-          {/* Confidence Meter Badge & Refresh */}
+          {/* Diagnostic controls */}
           <div className="flex items-center gap-2">
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-purple-500/10 border border-purple-500/30 text-purple-300 font-mono text-xs shadow-inner">
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-              </span>
-              <span className="font-bold">FlowForge Agent</span>
-              <span className="text-purple-400/60">•</span>
-              <span className="font-bold text-emerald-400">
-                {confidenceScore}% Confidence
-              </span>
-            </div>
-
             <button
               onClick={handleTriggerAnalysis}
               disabled={analysisLoading}
@@ -227,25 +219,6 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
             >
               <RefreshCw className={`h-4 w-4 ${analysisLoading ? 'animate-spin text-purple-400' : ''}`} />
             </button>
-          </div>
-        </div>
-
-        {/* Confidence Meter Visual Bar */}
-        <div className="mt-4 pt-3 border-t border-slate-800/80">
-          <div className="flex items-center justify-between text-[11px] font-mono mb-1.5">
-            <span className="text-slate-400 flex items-center gap-1.5">
-              <ShieldAlert className="h-3.5 w-3.5 text-purple-400" />
-              <span>Diagnostic Certainty Index</span>
-            </span>
-            <span className="text-purple-300 font-semibold font-mono">
-              {analysisLoading ? 'Analyzing...' : `${confidenceScore}% High Precision`}
-            </span>
-          </div>
-          <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
-            <div 
-              className="h-full bg-gradient-to-r from-purple-500 via-indigo-500 to-emerald-400 rounded-full transition-all duration-700 ease-out"
-              style={{ width: `${analysisLoading ? 50 : confidenceScore}%` }}
-            />
           </div>
         </div>
 
@@ -281,7 +254,7 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
               </p>
             </div>
 
-            {/* Similar Historical Failure (from FlowForge Semantic Memory / ChromaDB) */}
+            {/* Similar Historical Failure from FlowForge Semantic Memory */}
             {analysisData?.similarPreviousRunNumber && (
               <div className="rounded-xl bg-indigo-950/25 border border-indigo-500/30 p-3.5 flex flex-wrap items-center justify-between gap-3 shadow-inner">
                 <div className="flex items-center gap-3">
@@ -433,4 +406,3 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
     </div>
   );
 };
-

@@ -72,7 +72,7 @@ Models implemented:
 - `DiscussionComment`
   - comments posted under discussions
 
-The database can run against SQLite or PostgreSQL. The code intentionally handles PostgreSQL URL normalization and SQLite fallback.
+The database uses Supabase PostgreSQL as the single source of truth. PostgreSQL URLs are normalized and connectivity is validated during startup; there is no SQLite fallback because showing stale local data would hide synchronization problems.
 
 ---
 

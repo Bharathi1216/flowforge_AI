@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from pydantic import Field
 from pydantic_settings import BaseSettings
 from typing import ClassVar, Optional
 
@@ -8,16 +9,16 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "FlowForge AI"
     VERSION: str = "1.0.0"
     API_V1_STR: str = "/api"
-    SECRET_KEY: str = os.getenv("SECRET_KEY", "flowforge-super-secret-jwt-key-2026-change-in-prod")
+    SECRET_KEY: str = Field(..., min_length=32)
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7 # 7 days
     
     # Frontend URL for CORS & redirects
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:5173")
     
-    # Database Settings (PostgreSQL with SQLite fallback)
-    LOCAL_DATABASE_PATH: ClassVar[Path] = Path(__file__).resolve().parents[2] / "database" / "local" / "flowforge.db"
-    DATABASE_URL: str = os.getenv("DATABASE_URL", f"sqlite:///{LOCAL_DATABASE_PATH.as_posix()}")
+    # Supabase/PostgreSQL is the single source of truth. Do not silently use
+    # local SQLite, because that can expose stale or cross-account data.
+    DATABASE_URL: str = Field(..., min_length=1)
     
     # GitHub OAuth App Settings
     GITHUB_CLIENT_ID: Optional[str] = os.getenv("GITHUB_CLIENT_ID", "")
@@ -27,8 +28,8 @@ class Settings(BaseSettings):
     WEBHOOK_CALLBACK_URL: Optional[str] = os.getenv("WEBHOOK_CALLBACK_URL", "")
 
     # Google Gemini AI Settings
-    GEMINI_API_KEY: Optional[str] = os.getenv("GEMINI_API_KEY", "")
-    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+    GEMINI_API_KEY: str = Field(..., min_length=1)
+    GEMINI_MODEL: str = Field(..., min_length=1)
 
     class Config:
         env_file = Path(__file__).resolve().parents[1] / ".env"

@@ -57,13 +57,17 @@ def _repository_payload(repo: Repository, workflow_runs: list | None = None) -> 
         "isPrivate": repo.is_private,
         "lastWorkflowStatus": status,
         "lastUpdated": repo.updated_at.isoformat() if repo.updated_at else "",
-        "contributorCount": 0,
+        # The owner is always a contributor; detailed collaborators are loaded
+        # only in the repository workspace.
+        "contributorCount": 1,
         "openDiscussionsCount": len(repo.discussions) if repo.discussions else 0,
         "failureCount": failure_count,
         "successRate": success_rate,
         "webhookId": repo.webhook_id,
         "webhookRegistered": bool(repo.webhook_id),
-        "userAccessRole": "owner" if (repo.user and repo.owner == repo.user.username) else "developer",
+        "userAccessRole": "owner" if (
+            repo.user and repo.owner.lower() == repo.user.username.lower()
+        ) else "developer",
     }
 
 
@@ -112,10 +116,8 @@ async def list_repositories(
             .all()
         )
         if existing_repos:
-            if settings.WEBHOOK_CALLBACK_URL and settings.GITHUB_WEBHOOK_SECRET:
-                for repository in existing_repos:
-                    await _ensure_webhook(repository, user)
-                db.commit()
+            # Repository display is a local read. Webhook registration belongs to
+            # synchronization/explicit registration, not the normal read path.
             return [_repository_payload(repo) for repo in existing_repos]
 
     async with repository_sync_lock:
@@ -243,13 +245,13 @@ async def list_collaborators(repo_id: str, user: User = Depends(get_current_user
 
     fallback = [
         {
-            "id": str(user.id),
-            "username": repository.owner,
-            "name": repository.owner,
+            "id": str(user.github_id),
+            "username": user.username,
+            "name": user.name or user.username,
             "avatarUrl": user.avatar_url or "",
-            "role": "owner",
-            "permissions": {"admin": True, "push": True, "pull": True},
-            "lastActivity": "Repository owner",
+            "role": "owner" if user.username.lower() == repository.owner.lower() else "developer",
+            "permissions": {"admin": False, "push": True, "pull": True},
+            "lastActivity": "Repository access granted on GitHub",
             "issuesResolved": 0,
             "failuresFixed": 0,
         }
@@ -263,24 +265,40 @@ async def list_collaborators(repo_id: str, user: User = Depends(get_current_user
             response = await client.get(
                 f"https://api.github.com/repos/{repository.full_name}/collaborators",
                 headers={**GITHUB_HEADERS, "Authorization": f"Bearer {user.access_token}"},
-                params={"per_page": 100, "affiliation": "all"},
+                params={"per_page": 100},
             )
             if response.status_code == 200:
-                return [
+                members = [
                     {
                         "id": str(member.get("id")),
                         "username": member.get("login", ""),
                         "name": member.get("name") or member.get("login", ""),
                         "avatarUrl": member.get("avatar_url", ""),
-                        "role": "owner" if member.get("login") == repository.owner else member.get("permissions", {}).get("admin") and "maintainer" or "developer",
+                        "role": "owner" if (
+                            str(member.get("login", "")).lower() == repository.owner.lower()
+                        ) else member.get("permissions", {}).get("admin") and "maintainer" or "developer",
                         "permissions": member.get("permissions", {}),
                         "lastActivity": "Repository access granted on GitHub",
                         "issuesResolved": 0,
                         "failuresFixed": 0,
                     }
                     for member in response.json()
+                    if member.get("id") is not None and member.get("login")
                 ]
-    except Exception:
+                unique_members: dict[str, dict] = {}
+                for member in members:
+                    unique_members.setdefault(str(member["id"]), member)
+                owner = next(
+                    (
+                        member for member in unique_members.values()
+                        if member["username"].lower() == repository.owner.lower()
+                    ),
+                    None,
+                )
+                if owner is None and user.username.lower() == repository.owner.lower():
+                    unique_members[str(user.github_id)] = fallback[0]
+                return list(unique_members.values())
+    except httpx.HTTPError:
         pass
 
     return fallback

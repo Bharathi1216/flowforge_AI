@@ -1,4 +1,14 @@
 .env
+.env.*
+!.env.example
 *.db
 *.pem
 __pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+models/

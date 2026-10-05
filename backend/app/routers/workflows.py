@@ -31,8 +31,12 @@ def _status(run: dict) -> tuple[str, str | None]:
 
 def _payload(run: WorkflowRun) -> dict:
     status = "running" if run.status in {"queued", "in_progress"} else run.status
-    if status == "completed":
-        status = "success" if run.conclusion == "success" else "failed" if run.conclusion == "failure" else "warning"
+    if run.conclusion == "failure" or status == "failure":
+        status = "failed"
+    elif run.conclusion == "success" or status == "success":
+        status = "success"
+    elif status not in {"running", "failed", "success"}:
+        status = "warning"
     failure = run.failure_logs[0] if run.failure_logs else None
     payload = {
         "id": run.github_run_id,
@@ -67,7 +71,24 @@ def _payload(run: WorkflowRun) -> dict:
 
 def _upsert_run(repository: Repository, github_run: dict, db: Session) -> WorkflowRun:
     status, conclusion = _status(github_run)
-    workflow_run = db.query(WorkflowRun).filter(WorkflowRun.github_run_id == str(github_run["id"])).one_or_none()
+    workflow_run = (
+        db.query(WorkflowRun)
+        .filter(
+            WorkflowRun.repository_id == repository.id,
+            WorkflowRun.github_run_id == str(github_run["id"]),
+        )
+        .one_or_none()
+    )
+    if workflow_run is None:
+        # Older databases may still have a global unique index on github_run_id.
+        # Never attach another user's run to this repository.
+        workflow_run = (
+            db.query(WorkflowRun)
+            .filter(WorkflowRun.github_run_id == str(github_run["id"]))
+            .one_or_none()
+        )
+        if workflow_run is not None and workflow_run.repository_id != repository.id:
+            return workflow_run
     if not workflow_run:
         workflow_run = WorkflowRun(repository_id=repository.id, github_run_id=str(github_run["id"]))
         db.add(workflow_run)
@@ -242,7 +263,7 @@ async def get_workflow_logs(repo_id: str, run_id: str, user: User = Depends(get_
             existing.raw_logs = raw_logs
             existing.error_snippet = error_snippet or None
 
-            # Index into ChromaDB vector store
+            # Index into Supabase pgvector
             if error_snippet:
                 try:
                     from app.services.vector_store import vector_store
