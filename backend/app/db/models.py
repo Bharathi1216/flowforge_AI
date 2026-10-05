@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, Integer, Float, String, Text, Boolean, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import relationship
 from app.db.database import Base
 
@@ -103,7 +103,14 @@ class FailureLog(Base):
     error_snippet = Column(Text, nullable=True)
     root_cause = Column(Text, nullable=True)
     suggested_fix = Column(Text, nullable=True)
-    ai_confidence = Column(Integer, default=90)
+    ai_confidence = Column(Float, nullable=True)
+    failure_fingerprint = Column(String(255), nullable=True, index=True)
+    structured_failure = Column(Text, nullable=True)
+    important_log_blocks = Column(Text, nullable=True)
+    evidence = Column(Text, nullable=True)
+    analysis_status = Column(String(50), default="completed")
+    model = Column(String(100), nullable=True)
+    prompt_version = Column(String(50), default="rca-v1")
     created_at = Column(DateTime, default=datetime.utcnow)
 
     workflow_run = relationship("WorkflowRun", back_populates="failure_logs")

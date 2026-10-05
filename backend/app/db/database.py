@@ -41,10 +41,18 @@ def get_db():
 def init_db():
     from app.db import models
     Base.metadata.create_all(bind=engine)
-    inspector = inspect(engine)
     additions = {
         "discussions": [("github_issue_number", "INTEGER")],
         "discussion_comments": [("github_comment_id", "VARCHAR(100)")],
+        "failure_logs": [
+            ("failure_fingerprint", "VARCHAR(255)"),
+            ("structured_failure", "TEXT"),
+            ("important_log_blocks", "TEXT"),
+            ("evidence", "TEXT"),
+            ("analysis_status", "VARCHAR(50)"),
+            ("model", "VARCHAR(100)"),
+            ("prompt_version", "VARCHAR(50)"),
+        ],
     }
     with engine.begin() as connection:
         connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
@@ -74,9 +82,17 @@ def init_db():
             """
         ))
         for table, columns in additions.items():
-            existing_columns = {column["name"] for column in inspector.get_columns(table)}
+            res = connection.execute(
+                text("SELECT column_name FROM information_schema.columns WHERE table_name = :t"),
+                {"t": table}
+            ).fetchall()
+            existing_columns = {r[0] for r in res}
             for column_name, column_type in columns:
                 if column_name not in existing_columns:
                     connection.execute(text(
-                        f"ALTER TABLE {table} ADD COLUMN {column_name} {column_type}"
+                        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column_name} {column_type}"
                     ))
+        # Ensure ai_confidence is double precision float
+        connection.execute(text(
+            "ALTER TABLE failure_logs ALTER COLUMN ai_confidence TYPE double precision USING ai_confidence::double precision;"
+        ))

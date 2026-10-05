@@ -31,6 +31,14 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = Field(..., min_length=1)
     GEMINI_MODEL: str = Field(..., min_length=1)
 
+    # LogSage RCA Pipeline Settings
+    RCA_CONTEXT_BEFORE: int = Field(default=4, ge=1, le=20)
+    RCA_CONTEXT_AFTER: int = Field(default=6, ge=1, le=30)
+    RCA_MAX_TOKENS: int = Field(default=4000, ge=500, le=30000)
+    RCA_KEYWORDS: str = Field(
+        default="fatal,fail,failed,panic,error,exit,kill,no such file,missing,exception,cannot,traceback,npm ERR,exit code,exit status"
+    )
+
     class Config:
         env_file = Path(__file__).resolve().parents[1] / ".env"
         extra = "allow"

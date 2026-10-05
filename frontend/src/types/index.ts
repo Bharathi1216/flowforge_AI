@@ -91,6 +91,24 @@ export interface LogLine {
   section?: string;
 }
 
+export interface LogAnalysisBlock {
+  error_logs?: number[][];
+  errorLogs?: number[][];
+  analysis: string;
+}
+
+export interface ImportantLogBlock {
+  start_line?: number;
+  startLine?: number;
+  end_line?: number;
+  endLine?: number;
+  lines?: { line_number?: number; lineNumber?: number; text: string; is_candidate?: boolean; isCandidate?: boolean }[];
+  text?: string;
+  importance_score?: number;
+  importanceScore?: number;
+  reasons?: string[];
+}
+
 export interface FailureAnalysis {
   id: string;
   runId: string;
@@ -98,6 +116,13 @@ export interface FailureAnalysis {
   summary: string;
   rootCause: string;
   suggestedFix: string;
+  confidence?: number;
+  evidence?: string[];
+  logAnalysis?: LogAnalysisBlock[];
+  importantLogBlocks?: ImportantLogBlock[];
+  failureFingerprint?: string;
+  analysisStatus?: 'completed' | 'fallback' | 'failed' | 'pending';
+  rawLogs?: string;
   similarPreviousRunId?: string;
   similarPreviousRunNumber?: number;
   similarMatchPercent?: number;

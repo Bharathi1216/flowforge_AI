@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime
 import json
+import logging
 import re
 import time
 from typing import Optional
@@ -13,6 +14,8 @@ from app.config import settings
 from app.db.database import get_db
 from app.db.models import FailureLog, Repository, User, WorkflowRun
 from app.routers.auth import get_current_user
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/repositories/{repo_id}", tags=["ai"])
 
@@ -73,6 +76,18 @@ async def analyze_failure(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
+    from app.services.failure_extractor import (
+        extract_structured_failure,
+        generate_failure_fingerprint,
+    )
+    from app.services.log_comparator import (
+        extract_successful_run_templates,
+        summarize_differences_from_successful,
+    )
+    from app.services.log_preprocessor import preprocess_logs
+    from app.services.rca_engine import PROMPT_VERSION, run_rca
+    from app.services.vector_store import vector_store
+
     repository = _find_repo(repo_id, user.id, db)
     if not repository:
         raise HTTPException(status_code=404, detail="Repository not found")
@@ -88,106 +103,174 @@ async def analyze_failure(
         raise HTTPException(status_code=404, detail="Workflow run not found")
 
     failures = db.query(FailureLog).filter(FailureLog.workflow_run_id == workflow_run.id).all()
-    log_text = "\n\n".join(
-        f"Job: {failure.step_name or 'unknown'}\n{failure.raw_logs or failure.error_snippet or ''}"
-        for failure in failures
-    )[:30000]
 
-    if not log_text.strip() and workflow_run.steps:
+    # Step 1: Collect & preserve complete raw logs
+    raw_logs_parts = []
+    failed_step_name = None
+    for f in failures:
+        if f.raw_logs:
+            raw_logs_parts.append(f.raw_logs)
+        elif f.error_snippet:
+            raw_logs_parts.append(f.error_snippet)
+        if f.step_name and not failed_step_name:
+            failed_step_name = f.step_name
+
+    # Check workflow run steps if no failed step identified yet
+    if not failed_step_name and workflow_run.steps:
+        for s in workflow_run.steps:
+            if s.status == "failed" or s.conclusion == "failure":
+                failed_step_name = s.name
+                break
+
+    if not failed_step_name:
+        failed_step_name = "build"
+
+    combined_raw_logs = "\n\n".join(raw_logs_parts).strip()
+    if not combined_raw_logs and workflow_run.steps:
         step_details = "\n".join(
             f"Step {s.step_number}: {s.name} - Status: {s.status}, Conclusion: {s.conclusion or 'unknown'}"
             for s in workflow_run.steps
         )
-        log_text = f"Workflow '{workflow_run.workflow_name}' failed.\nExecuted Steps:\n{step_details}"
+        combined_raw_logs = f"Workflow '{workflow_run.workflow_name}' failed.\nExecuted Steps:\n{step_details}"
 
-    # Query Supabase pgvector for similar historical failures
-    from app.services.vector_store import vector_store
+    raw_lines = combined_raw_logs.splitlines() if combined_raw_logs else []
 
-    error_snippet_query = ""
-    if failures and failures[0].error_snippet:
-        error_snippet_query = failures[0].error_snippet
-    elif log_text:
-        error_snippet_query = log_text[:1500]
+    # Step 2: Extract baseline templates from successful runs
+    successful_templates = extract_successful_run_templates(
+        db=db,
+        repository_id=repository.id,
+        workflow_name=workflow_run.workflow_name,
+        max_runs=3,
+    )
 
+    # Step 3: Key Log Filtering, Expansion (4 before, 6 after), and Token Budget Pruning
+    important_blocks, candidate_lines = preprocess_logs(
+        raw_logs=combined_raw_logs,
+        failed_step_name=failed_step_name,
+        successful_run_templates=successful_templates,
+    )
+
+    # Step 4: Run Differences vs. Successful Baseline
+    differences = summarize_differences_from_successful(
+        failed_lines=raw_lines,
+        successful_templates=successful_templates,
+        failed_step_name=failed_step_name,
+    )
+
+    # Step 5: Deterministic Structured Failure & Normalized Fingerprint Extraction
+    structured = extract_structured_failure(
+        workflow_name=workflow_run.workflow_name,
+        run_id=workflow_run.github_run_id,
+        failed_step=failed_step_name,
+        branch=workflow_run.branch,
+        commit_sha=workflow_run.commit_sha,
+        raw_lines=raw_lines,
+        important_blocks=important_blocks,
+        exit_code=failures[0].exit_code if failures and failures[0].exit_code else 1,
+        repo_language=repository.language,
+    )
+    fingerprint = generate_failure_fingerprint(structured)
+
+    # Step 6: Historical Precedents Lookup from Supabase pgvector
+    vector_query = f"{structured.get('exception', '')} {fingerprint}"
     similar_runs = vector_store.find_similar_failures(
         repo_id=str(repository.id),
-        error_snippet=error_snippet_query,
+        error_snippet=vector_query,
         current_run_id=workflow_run.github_run_id,
         limit=2,
-        min_similarity=0.55,
+        min_similarity=0.50,
     )
     similar_match = similar_runs[0] if similar_runs else None
 
-    similar_context = ""
-    if similar_match:
-        similar_context = f"\nSemantic Match: A similar failure occurred in Run #{similar_match['runNumber']} (Similarity: {similar_match['similarityPercent']}%):\n{similar_match['document'][:800]}\n"
+    # Step 7: LogSage Structured RCA Generation (with deterministic fallback)
+    rca_result = await run_rca(
+        workflow_name=workflow_run.workflow_name,
+        failed_step=failed_step_name,
+        commit_sha=workflow_run.commit_sha or "HEAD",
+        branch=workflow_run.branch,
+        structured_failure=structured,
+        important_blocks=important_blocks,
+        differences=differences,
+        historical_precedents=similar_runs,
+    )
 
-    prompt = f"""You are the FlowForge AI Diagnostic Engine, an advanced CI/CD failure diagnostic intelligence system for GitHub Actions.
-Analyze the workflow failure details and error logs below.
-Do not invent facts that are not present in the logs or run details.
-Do NOT mention third-party AI provider names or model names (e.g. do not mention Gemini, OpenAI, Claude). Always refer to yourself as FlowForge AI Diagnostic Engine.
+    # Step 8: Persistence to Database
+    root_cause_str = (
+        "\n".join(rca_result["root_cause"])
+        if isinstance(rca_result.get("root_cause"), list)
+        else str(rca_result.get("root_cause", ""))
+    )
+    evidence_json = json.dumps(rca_result.get("evidence", []))
+    structured_json = json.dumps(structured)
+    blocks_json = json.dumps(important_blocks)
+    confidence_val = rca_result.get("confidence", 0.85)
 
-Return ONLY a valid JSON object with these exact keys:
-- "summary": A concise, clear summary of what happened.
-- "rootCause": Detailed root cause explaining specifically why the build/job failed.
-- "suggestedFix": Actionable remediation steps with exact commands or code snippets where applicable.
-- "confidence": An integer between 75 and 99 reflecting diagnostic certainty.
-
-Repository: {repository.full_name}
-Workflow: {workflow_run.workflow_name}
-Run number: {workflow_run.run_number}
-Branch: {workflow_run.branch}
-Commit: {workflow_run.commit_sha or 'unknown'} ({workflow_run.commit_message or 'No commit message'})
-{similar_context}
-Logs & Failure Context:
-{log_text or f"Workflow '{workflow_run.workflow_name}' failed with status '{workflow_run.status}' (conclusion: '{workflow_run.conclusion}')."}"""
-    try:
-        result = _parse_result(await _generate_gemini_response(prompt))
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail="Gemini root-cause analysis failed") from exc
-
-    confidence = max(0, min(100, int(result["confidence"])))
     if failures:
         for failure in failures:
-            failure.root_cause = result["rootCause"]
-            failure.suggested_fix = result["suggestedFix"]
-            failure.ai_confidence = confidence
+            failure.root_cause = root_cause_str
+            failure.suggested_fix = rca_result.get("suggested_fix", "")
+            failure.ai_confidence = confidence_val
+            failure.failure_fingerprint = fingerprint
+            failure.structured_failure = structured_json
+            failure.important_log_blocks = blocks_json
+            failure.evidence = evidence_json
+            failure.analysis_status = rca_result.get("analysis_status", "completed")
+            failure.model = rca_result.get("model", "FlowForge RCA Engine (LogSage)")
+            failure.prompt_version = PROMPT_VERSION
     else:
         new_failure = FailureLog(
             workflow_run_id=workflow_run.id,
-            step_name="GitHub Actions Workflow",
-            root_cause=result["rootCause"],
-            suggested_fix=result["suggestedFix"],
-            ai_confidence=confidence,
+            step_name=failed_step_name,
+            raw_logs=combined_raw_logs,
+            error_snippet=structured.get("exception", "")[:500],
+            root_cause=root_cause_str,
+            suggested_fix=rca_result.get("suggested_fix", ""),
+            ai_confidence=confidence_val,
+            failure_fingerprint=fingerprint,
+            structured_failure=structured_json,
+            important_log_blocks=blocks_json,
+            evidence=evidence_json,
+            analysis_status=rca_result.get("analysis_status", "completed"),
+            model=rca_result.get("model", "FlowForge RCA Engine (LogSage)"),
+            prompt_version=PROMPT_VERSION,
         )
         db.add(new_failure)
     db.commit()
 
-    # Index into Supabase pgvector with verified root cause and suggested fix
+    # Step 9: Index verified failure into PGVector
     try:
-        step_name = failures[0].step_name if failures and failures[0].step_name else "GitHub Actions"
         vector_store.index_failure(
             repo_id=str(repository.id),
             run_id=workflow_run.github_run_id,
             run_number=workflow_run.run_number,
             workflow_name=workflow_run.workflow_name,
-            step_name=step_name,
-            error_snippet=error_snippet_query or result["summary"],
-            root_cause=result["rootCause"],
-            suggested_fix=result["suggestedFix"],
-            exit_code=1,
+            step_name=failed_step_name,
+            error_snippet=structured.get("exception", "") or fingerprint,
+            root_cause=root_cause_str,
+            suggested_fix=rca_result.get("suggested_fix", ""),
+            exit_code=structured.get("exit_code", 1),
         )
-    except Exception:
-        pass
+    except Exception as idx_err:
+        logger.warning("Error indexing failure to vector store: %s", idx_err)
 
     return {
         "id": f"analysis-{run_id}",
         "runId": run_id,
         "title": f"Workflow Run #{workflow_run.run_number} Diagnostics",
-        "summary": result["summary"],
-        "rootCause": result["rootCause"],
-        "suggestedFix": result["suggestedFix"],
-        "confidence": confidence,
+        "summary": (
+            rca_result["root_cause"][0]
+            if (isinstance(rca_result.get("root_cause"), list) and rca_result["root_cause"])
+            else (root_cause_str or f"Diagnostics for run #{workflow_run.run_number}")
+        ),
+        "rootCause": root_cause_str,
+        "suggestedFix": rca_result.get("suggested_fix", ""),
+        "confidence": confidence_val,
+        "evidence": rca_result.get("evidence", []),
+        "logAnalysis": rca_result.get("log_analysis", []),
+        "importantLogBlocks": important_blocks,
+        "failureFingerprint": fingerprint,
+        "analysisStatus": rca_result.get("analysis_status", "completed"),
+        "rawLogs": combined_raw_logs,
         "similarPreviousRunId": similar_match["runId"] if similar_match else None,
         "similarPreviousRunNumber": similar_match["runNumber"] if similar_match else None,
         "similarMatchPercent": similar_match["similarityPercent"] if similar_match else None,

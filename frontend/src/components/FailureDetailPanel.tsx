@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { 
   Copy, Check, Terminal, AlertOctagon, MessageSquarePlus, 
   Sparkles, RefreshCw, CheckCircle2, Zap, AlertCircle,
-  History, GitBranch
+  History, GitBranch, Eye, EyeOff, FileText, Fingerprint
 } from 'lucide-react';
 import { WorkflowRun, FailureAnalysis } from '../types';
 import { useToast } from '../contexts/ToastContext';
@@ -27,6 +27,7 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
   const [copiedFix, setCopiedFix] = useState(false);
   const [realLogs, setRealLogs] = useState<string>('');
   const [logsError, setLogsError] = useState<string | null>(null);
+  const [showFullRawLogs, setShowFullRawLogs] = useState<boolean>(false);
 
   // AI Diagnostic State
   const [analysisLoading, setAnalysisLoading] = useState(false);
@@ -211,6 +212,16 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
 
           {/* Diagnostic controls */}
           <div className="flex items-center gap-2">
+            {analysisData?.confidence !== undefined && (
+              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-purple-500/20 border border-purple-500/30 text-purple-300 font-mono text-xs font-bold">
+                <Zap className="h-3.5 w-3.5 text-amber-400" />
+                <span>
+                  {analysisData.confidence <= 1
+                    ? Math.round(analysisData.confidence * 100)
+                    : Math.round(analysisData.confidence)}% Analytical Confidence
+                </span>
+              </div>
+            )}
             <button
               onClick={handleTriggerAnalysis}
               disabled={analysisLoading}
@@ -232,6 +243,15 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
           </div>
         ) : (
           <div className="mt-4 space-y-3.5 relative z-10">
+            {/* Failure Fingerprint Signature */}
+            {analysisData?.failureFingerprint && (
+              <div className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-slate-950/70 border border-purple-500/25 text-[11px] font-mono">
+                <Fingerprint className="h-3.5 w-3.5 text-purple-400 flex-shrink-0" />
+                <span className="text-slate-400 font-semibold">Normalized Signature:</span>
+                <span className="text-purple-300 truncate">{analysisData.failureFingerprint}</span>
+              </div>
+            )}
+
             {/* Executive Summary */}
             <div className="rounded-xl bg-slate-950/70 border border-slate-800/80 p-3.5">
               <div className="text-[11px] font-bold text-slate-400 uppercase font-mono tracking-wider mb-1 flex items-center gap-1.5">
@@ -247,12 +267,72 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
             <div className="rounded-xl bg-rose-950/20 border border-rose-500/30 p-3.5">
               <div className="text-[11px] font-bold text-rose-400 uppercase font-mono tracking-wider mb-1 flex items-center gap-1.5">
                 <AlertOctagon className="h-3.5 w-3.5 text-rose-400" />
-                <span>Identified Root Cause</span>
+                <span>Identified Root Cause (LogSage Analysis)</span>
               </div>
               <p className="text-xs text-rose-200/90 leading-relaxed font-mono whitespace-pre-wrap">
                 {effectiveRootCause}
               </p>
             </div>
+
+            {/* Factual Log Evidence */}
+            {analysisData?.evidence && analysisData.evidence.length > 0 && (
+              <div className="rounded-xl bg-slate-950/70 border border-slate-800/80 p-3.5">
+                <div className="text-[11px] font-bold text-amber-400 uppercase font-mono tracking-wider mb-2 flex items-center gap-1.5">
+                  <AlertCircle className="h-3.5 w-3.5" />
+                  <span>Observed Log Evidence</span>
+                </div>
+                <ul className="space-y-1.5">
+                  {analysisData.evidence.map((ev, idx) => (
+                    <li key={idx} className="text-xs text-slate-300 font-mono flex items-start gap-2">
+                      <span className="text-amber-400 select-none">•</span>
+                      <span>{ev}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {/* Critical Preprocessed Log Blocks */}
+            {analysisData?.importantLogBlocks && analysisData.importantLogBlocks.length > 0 && (
+              <div className="rounded-xl bg-slate-950/70 border border-purple-500/25 p-3.5 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="text-[11px] font-bold text-purple-300 uppercase font-mono tracking-wider flex items-center gap-1.5">
+                    <Terminal className="h-3.5 w-3.5 text-purple-400" />
+                    <span>Critical Log Blocks (Context Expanded m=4, n=6)</span>
+                  </div>
+                  <span className="text-[10px] text-slate-400 font-mono">
+                    {analysisData.importantLogBlocks.length} block{analysisData.importantLogBlocks.length > 1 ? 's' : ''} isolated
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  {analysisData.importantLogBlocks.map((block, bIdx) => {
+                    const startL = block.startLine ?? block.start_line ?? 1;
+                    const endL = block.endLine ?? block.end_line ?? 1;
+                    const score = block.importanceScore ?? block.importance_score ?? 0;
+                    return (
+                      <div key={bIdx} className="rounded-lg border border-slate-800 bg-black/60 overflow-hidden text-xs font-mono">
+                        <div className="flex items-center justify-between px-3 py-1.5 bg-slate-900/80 border-b border-slate-800 text-[10px] text-slate-400">
+                          <span className="font-bold text-purple-300">
+                            Block #{bIdx + 1}: Lines {startL}–{endL}
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            {block.reasons?.slice(0, 2).map((r, rIdx) => (
+                              <span key={rIdx} className="px-1.5 py-0.5 rounded bg-purple-950/60 border border-purple-500/20 text-purple-300 text-[9px]">
+                                {r}
+                              </span>
+                            ))}
+                            <span className="text-slate-500">Score: {score}</span>
+                          </div>
+                        </div>
+                        <pre className="p-3 overflow-x-auto text-[11px] text-slate-200 leading-relaxed font-mono whitespace-pre select-text">
+                          {block.text || block.lines?.map(l => `${(l.lineNumber ?? l.line_number ?? 0).toString().padStart(5, ' ')} | ${l.text}`).join('\n')}
+                        </pre>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* Similar Historical Failure from FlowForge Semantic Memory */}
             {analysisData?.similarPreviousRunNumber && (
@@ -375,33 +455,58 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
         </div>
       )}
 
-      {/* 4. Captured Failure Summary / Logs */}
+      {/* 4. Complete Execution Logs & Preserved Raw Archive */}
       <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0E121D] p-5 shadow-sm space-y-3">
-        <div className="flex items-center justify-between text-xs font-bold">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-bold">
           <div className="flex items-center gap-2 text-rose-700 dark:text-rose-400 uppercase tracking-wider font-mono">
             <Terminal className="h-4 w-4" />
-            <span>GitHub Actions Failure Diagnostic Log</span>
+            <span>GitHub Actions Complete Execution Logs</span>
           </div>
 
-          <button
-            onClick={handleCopyLogs}
-            className="hover:text-purple-600 dark:hover:text-white transition-colors flex items-center gap-1 font-bold text-slate-500 dark:text-slate-400 text-[11px]"
-          >
-            {copiedLogs ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}
-            <span>{copiedLogs ? 'Copied' : 'Copy'}</span>
-          </button>
-        </div>
-
-        <div className="relative rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-900 dark:bg-slate-950 overflow-hidden shadow-inner">
-          <div className="flex items-center justify-between px-4 py-2 bg-slate-950 dark:bg-black/50 border-b border-slate-800 text-[10px] text-slate-400 font-mono">
-            <span>Commit {run.commitSha || 'HEAD'} • {run.name} • Run #{run.runNumber}</span>
-            <span className="text-rose-400">Exit Code: 1</span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowFullRawLogs(!showFullRawLogs)}
+              className="px-3 py-1.5 rounded-xl border border-purple-500/30 bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-900/60 text-[11px] font-mono font-bold transition-all flex items-center gap-1.5 shadow-sm"
+            >
+              {showFullRawLogs ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+              <span>{showFullRawLogs ? 'Hide Full Raw Log' : 'View Full Raw Log'}</span>
+            </button>
+            <button
+              onClick={handleCopyLogs}
+              className="hover:text-purple-600 dark:hover:text-white transition-colors flex items-center gap-1 font-bold text-slate-500 dark:text-slate-400 text-[11px] px-2 py-1"
+            >
+              {copiedLogs ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}
+              <span>{copiedLogs ? 'Copied' : 'Copy'}</span>
+            </button>
           </div>
-
-          <pre className="font-mono text-xs text-rose-300 p-4 overflow-x-auto whitespace-pre-wrap leading-relaxed max-h-[380px] scrollbar-terminal select-text">
-            {logsError || realLogs || errorMessage}
-          </pre>
         </div>
+
+        {showFullRawLogs ? (
+          <div className="relative rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-900 dark:bg-slate-950 overflow-hidden shadow-inner">
+            <div className="flex items-center justify-between px-4 py-2 bg-slate-950 dark:bg-black/50 border-b border-slate-800 text-[10px] text-slate-400 font-mono">
+              <span>Commit {run.commitSha || 'HEAD'} • {run.name} • Run #{run.runNumber} (Complete Preserved Raw Log)</span>
+              <span className="text-rose-400">Exit Code: 1</span>
+            </div>
+
+            <pre className="font-mono text-xs text-rose-300 p-4 overflow-x-auto whitespace-pre-wrap leading-relaxed max-h-[500px] scrollbar-terminal select-text">
+              {analysisData?.rawLogs || logsError || realLogs || errorMessage}
+            </pre>
+          </div>
+        ) : (
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800/80 bg-slate-50 dark:bg-slate-950/40 p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs font-mono">
+            <div className="flex items-center gap-2.5 text-slate-600 dark:text-slate-400">
+              <FileText className="h-4 w-4 text-purple-400 flex-shrink-0" />
+              <span>Complete workflow logs preserved in Supabase. Critical failure segments isolated above.</span>
+            </div>
+            <button
+              onClick={() => setShowFullRawLogs(true)}
+              className="px-3.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 dark:bg-purple-950/40 dark:hover:bg-purple-900/60 border border-purple-500/30 text-purple-300 text-xs font-medium transition-all flex items-center gap-1.5 flex-shrink-0"
+            >
+              <Eye className="h-3.5 w-3.5" />
+              <span>View Full Raw Log</span>
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
