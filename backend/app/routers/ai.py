@@ -171,18 +171,42 @@ async def analyze_failure(
     )
     fingerprint = generate_failure_fingerprint(structured)
 
-    # Step 6: Historical Precedents Lookup from Supabase pgvector
-    vector_query = f"{structured.get('exception', '')} {fingerprint}"
-    similar_runs = vector_store.find_similar_failures(
-        repo_id=str(repository.id),
-        error_snippet=vector_query,
-        current_run_id=workflow_run.github_run_id,
-        limit=2,
-        min_similarity=0.50,
+    # Step 6: Embed the current failure and retrieve RAG context from pgvector.
+    # Retrieval is optional: an embedding/database outage must not prevent the
+    # current failure from reaching Gemini or the deterministic RCA fallback.
+    critical_log_text = "\n".join(
+        block.get("text", "") for block in important_blocks
+    )[:6000]
+    vector_query = "\n".join(
+        part
+        for part in (
+            structured.get("exception", ""),
+            f"Failure fingerprint: {fingerprint}",
+            critical_log_text,
+        )
+        if part
     )
+    try:
+        similar_runs = vector_store.find_similar_failures(
+            repo_id=str(repository.id),
+            error_snippet=vector_query,
+            current_run_id=workflow_run.github_run_id,
+            limit=2,
+            min_similarity=0.50,
+        )
+    except Exception as retrieval_err:
+        logger.warning(
+            "Unable to retrieve RAG context for run %s; continuing without "
+            "historical precedents: %s",
+            workflow_run.github_run_id,
+            retrieval_err,
+        )
+        similar_runs = []
     similar_match = similar_runs[0] if similar_runs else None
 
-    # Step 7: LogSage Structured RCA Generation (with deterministic fallback)
+    # Step 7: Generate RCA from the current error plus retrieved RAG context.
+    # run_rca falls back to deterministic regex/heuristic analysis when the
+    # model is unavailable or returns an unusable response.
     rca_result = await run_rca(
         workflow_name=workflow_run.workflow_name,
         failed_step=failed_step_name,
