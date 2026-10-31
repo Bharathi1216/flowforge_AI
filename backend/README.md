@@ -38,6 +38,16 @@ The endpoint is `/api/webhooks/github`. It validates the signature, stores the w
 
 On an explicit repository refresh, FlowForge attempts to create the hook for every accessible repository. A missing callback URL or secret skips registration so repositories still load. Repositories where the user is only a collaborator may not allow webhook creation.
 
+## Evidence Graph-Based Failure Analysis
+
+Failed-run analysis discovers diagnostic events across the complete available log, while retaining the existing configurable context windows (`RCA_CONTEXT_BEFORE=4` and `RCA_CONTEXT_AFTER=6`). The deterministic Evidence Graph records event line references, classifications, identifiers, supported relationships, and ranked root-cause candidates. Temporal `PRECEDES` edges do not imply causation; candidate scores are rankings rather than causal probabilities.
+
+The complete graph is persisted in the existing `failure_logs.structured_failure` JSON text alongside the structured failure record. The analysis response exposes a compact `evidenceGraph` summary, and graph-selected source lines are expanded and passed through the existing log-pruning path. If graph construction fails, analysis logs the error and continues with the existing RCA path.
+
+Successful workflow logs fetched by FlowForge are indexed into the `workflow_successes` pgvector collection. Similarity retrieval considers both successful workflow context and historical failed runs with their stored RCA/fix, and supplies matches to the current RCA prompt as references rather than verified answers. The embedding model and vector dimensions remain unchanged.
+
+The candidate-ranking weights can be tuned with `RCA_EVIDENCE_WEIGHT_TEMPORAL`, `RCA_EVIDENCE_WEIGHT_RELEVANCE`, `RCA_EVIDENCE_WEIGHT_RELATIONSHIPS`, `RCA_EVIDENCE_WEIGHT_STRENGTH`, and `RCA_EVIDENCE_WEIGHT_BASELINE` (each accepts `0.0`–`1.0`; defaults are equal weights). Missing baseline data is omitted and the remaining available weights are normalized. These initial weights are configuration defaults, not experimentally validated causal probabilities.
+
 ## Registration Test
 
 The protected registration endpoint is:

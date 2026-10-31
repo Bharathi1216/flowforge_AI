@@ -133,6 +133,59 @@ class VectorStoreService:
         logger.info("Indexed failure log in Supabase pgvector: %s", doc_id)
         return doc_id
 
+    def index_success(
+        self,
+        repo_id: str,
+        run_id: str,
+        run_number: int,
+        workflow_name: str,
+        step_name: str,
+        log_excerpt: str,
+    ) -> str:
+        """Index successful workflow evidence as a distinct retrieval collection."""
+        cleaned_excerpt = self._clean_text(log_excerpt)
+        if not cleaned_excerpt:
+            return ""
+        slug = "".join(c if c.isalnum() else "_" for c in step_name.lower())[:30]
+        doc_id = f"success-{repo_id}-{run_id}-{slug}"
+        if engine.dialect.name == "postgresql":
+            with engine.connect() as connection:
+                exists = connection.execute(
+                    text(
+                        """
+                        SELECT 1
+                        FROM vector_documents
+                        WHERE id = :id AND collection_name = 'workflow_successes'
+                        """
+                    ),
+                    {"id": doc_id},
+                ).first()
+            if exists:
+                return doc_id
+        document = (
+            f"Workflow: {workflow_name}\n"
+            f"Run: #{run_number}\n"
+            f"Run Status: successful\n"
+            f"Step: {step_name}\n"
+            f"Known-good Log Context:\n{cleaned_excerpt[:6000]}\n"
+        )
+        self._upsert(
+            doc_id,
+            "workflow_successes",
+            document,
+            {
+                "repo_id": str(repo_id),
+                "run_id": str(run_id),
+                "run_number": int(run_number),
+                "workflow_name": workflow_name,
+                "step_name": step_name,
+                "run_status": "success",
+                "timestamp": datetime.utcnow().isoformat(),
+            },
+        )
+        logger.info("Indexed successful workflow context in pgvector: %s", doc_id)
+        return doc_id
+
     def find_similar_failures(
         self,
         repo_id: str,
@@ -146,17 +199,17 @@ class VectorStoreService:
             return []
 
         query_vector = self._vector_literal(self._embed(cleaned))
-        conditions = [
-            "collection_name = 'workflow_failures'",
-            "metadata->>'repo_id' = :repo_id",
-        ]
+        exclude_current_run = (
+            "AND (metadata->>'run_id' IS NULL OR metadata->>'run_id' <> :current_run_id)"
+            if current_run_id
+            else ""
+        )
         parameters: dict[str, Any] = {
             "repo_id": str(repo_id),
             "query_vector": query_vector,
             "limit": max(limit + 2, 1),
         }
         if current_run_id:
-            conditions.append("metadata->>'run_id' <> :current_run_id")
             parameters["current_run_id"] = str(current_run_id)
 
         with engine.connect() as connection:
@@ -164,11 +217,15 @@ class VectorStoreService:
                 text(
                     f"""
                     SELECT
-                        id, document, metadata,
+                        id, collection_name, document, metadata,
                         1 - (embedding <=> CAST(:query_vector AS vector))
                             AS similarity
                     FROM vector_documents
-                    WHERE {' AND '.join(conditions)}
+                    WHERE collection_name IN (
+                        'workflow_failures', 'workflow_successes', 'knowledge_items'
+                    )
+                      AND metadata->>'repo_id' = :repo_id
+                      {exclude_current_run}
                     ORDER BY embedding <=> CAST(:query_vector AS vector)
                     LIMIT :limit
                     """
@@ -182,16 +239,33 @@ class VectorStoreService:
             if similarity < min_similarity:
                 continue
             metadata = row["metadata"] or {}
+            document = row["document"] or ""
             matches.append(
                 {
                     "id": row["id"],
-                    "runId": str(metadata.get("run_id", "")),
-                    "runNumber": metadata.get("run_number"),
+                    "runId": str(metadata.get("run_id") or metadata.get("similar_run_id") or ""),
+                    "runNumber": metadata.get("run_number") or metadata.get("similar_run_number"),
                     "workflowName": metadata.get("workflow_name", ""),
                     "stepName": metadata.get("step_name", ""),
+                    "runStatus": metadata.get(
+                        "run_status",
+                        "success" if row["collection_name"] == "workflow_successes" else "failure",
+                    ),
+                    "rootCause": (
+                        document.split("Root Cause:\n", 1)[1].split("\n", 1)[0]
+                        if "Root Cause:\n" in document
+                        else metadata.get("error_type", "")
+                    ),
+                    "suggestedFix": (
+                        document.split("Suggested Fix:\n", 1)[1].strip()
+                        if "Suggested Fix:\n" in document
+                        else document.split("Suggested Fix: ", 1)[1].strip()
+                        if "Suggested Fix: " in document
+                        else ""
+                    ),
                     "similarity": round(similarity, 3),
                     "similarityPercent": int(round(similarity * 100)),
-                    "document": row["document"] or "",
+                    "document": document,
                     "timestamp": metadata.get("timestamp", ""),
                 }
             )

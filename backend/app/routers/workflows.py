@@ -1,6 +1,7 @@
 from datetime import datetime
 from io import BytesIO
 import re
+import logging
 from zipfile import BadZipFile, ZipFile
 
 import httpx
@@ -13,6 +14,7 @@ from app.routers.auth import get_current_user
 
 router = APIRouter(prefix="/repositories/{repo_id}/workflows", tags=["workflows"])
 GITHUB_HEADERS = {"Accept": "application/vnd.github+json"}
+logger = logging.getLogger(__name__)
 
 
 def _parse_datetime(value: str | None) -> datetime | None:
@@ -211,8 +213,12 @@ async def list_workflows(repo_id: str, user: User = Depends(get_current_user), d
                     }
                     for workflow in response.json().get("workflows", [])
                 ]
-    except Exception:
-        pass
+    except Exception as index_err:
+        logger.warning(
+            "Could not index failed workflow context for run %s: %s",
+            workflow_run.github_run_id,
+            index_err,
+        )
     return []
 
 
@@ -229,6 +235,24 @@ async def get_workflow_logs(repo_id: str, run_id: str, user: User = Depends(get_
 
     persisted_logs = db.query(FailureLog).filter(FailureLog.workflow_run_id == workflow_run.id).all()
     if persisted_logs and all(log.raw_logs is not None for log in persisted_logs):
+        if workflow_run.status == "success" or workflow_run.conclusion == "success":
+            try:
+                from app.services.vector_store import vector_store
+                for log in persisted_logs:
+                    vector_store.index_success(
+                        repo_id=str(repository.id),
+                        run_id=workflow_run.github_run_id,
+                        run_number=workflow_run.run_number,
+                        workflow_name=workflow_run.workflow_name,
+                        step_name=log.step_name or "GitHub Actions",
+                        log_excerpt=log.raw_logs or "",
+                    )
+            except Exception as index_err:
+                logger.warning(
+                    "Could not index persisted successful workflow logs for run %s: %s",
+                    workflow_run.github_run_id,
+                    index_err,
+                )
         return [line for log in persisted_logs for line in _log_lines(log.raw_logs or "", log.step_name or "GitHub Actions")]
 
     async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
@@ -263,8 +287,25 @@ async def get_workflow_logs(repo_id: str, run_id: str, user: User = Depends(get_
             existing.raw_logs = raw_logs
             existing.error_snippet = error_snippet or None
 
-            # Index into Supabase pgvector
-            if error_snippet:
+            # Keep successful and failed workflow knowledge in separate collections.
+            if workflow_run.status == "success" or workflow_run.conclusion == "success":
+                try:
+                    from app.services.vector_store import vector_store
+                    vector_store.index_success(
+                        repo_id=str(repository.id),
+                        run_id=workflow_run.github_run_id,
+                        run_number=workflow_run.run_number,
+                        workflow_name=workflow_run.workflow_name,
+                        step_name=job.get("name") or "GitHub Actions",
+                        log_excerpt=raw_logs,
+                    )
+                except Exception as index_err:
+                    logger.warning(
+                        "Could not index successful workflow context for run %s: %s",
+                        workflow_run.github_run_id,
+                        index_err,
+                    )
+            elif error_snippet:
                 try:
                     from app.services.vector_store import vector_store
                     vector_store.index_failure(

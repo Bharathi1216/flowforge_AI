@@ -111,6 +111,11 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
   const effectiveRootCause = analysisData?.rootCause || run.diagnosticInfo?.rootCause || errorMessage;
   const providerResults = analysisData?.providers;
   const groqResult = providerResults?.groq;
+  const evidenceGraph = analysisData?.evidenceGraph;
+  const graphNodesById = new Map(
+    (evidenceGraph?.nodes || []).map((node) => [node.event_id, node] as const)
+  );
+  const graphEdges = evidenceGraph?.edges.slice(0, 5) || [];
 
   const renderProvider = (provider: ProviderAnalysis | undefined, label: string) => {
     if (!provider) {
@@ -318,6 +323,64 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
                     </li>
                   ))}
                 </ul>
+              </div>
+            )}
+
+            {evidenceGraph && (
+              <div className="rounded-xl bg-cyan-50/60 border border-cyan-200 dark:bg-slate-950/70 dark:border-cyan-500/25 p-3.5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="text-[11px] font-bold text-cyan-800 dark:text-cyan-300 uppercase font-mono tracking-wider flex items-center gap-1.5">
+                    <GitBranch className="h-3.5 w-3.5" />
+                    <span>Evidence Graph</span>
+                  </div>
+                  <span className="text-[10px] text-slate-700 dark:text-slate-400 font-mono">
+                    {evidenceGraph.nodes.length} events · {evidenceGraph.edges.length} relationships
+                  </span>
+                </div>
+                <p className="text-[10px] text-slate-600 dark:text-slate-400">
+                  Candidate scores rank evidence; they are not probabilities. Event order alone does not establish causation.
+                </p>
+                {evidenceGraph.root_cause_candidates.length > 0 ? (
+                  <ol className="space-y-2">
+                    {evidenceGraph.root_cause_candidates.slice(0, 3).map((candidate) => {
+                      const node = graphNodesById.get(candidate.event_id);
+                      if (!node) return null;
+                      return (
+                        <li key={candidate.event_id} className="rounded-lg border border-cyan-200/80 dark:border-cyan-500/20 bg-white/80 dark:bg-black/30 p-2.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[10px] font-bold text-cyan-800 dark:text-cyan-300 uppercase font-mono">
+                              Candidate #{candidate.rank} · Line {node.line_start}
+                            </span>
+                            <span className="text-[10px] text-slate-600 dark:text-slate-400 font-mono">
+                              score {candidate.score.toFixed(2)}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-xs text-slate-800 dark:text-slate-200 font-mono break-words">
+                            {node.original_message}
+                          </p>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                ) : (
+                  <p className="text-xs text-slate-700 dark:text-slate-300">
+                    No strongly classified root-cause candidate was identified.
+                  </p>
+                )}
+                {graphEdges.length > 0 && (
+                  <ul className="space-y-1 border-t border-cyan-200/80 dark:border-cyan-500/20 pt-2">
+                    {graphEdges.map((edge, index) => {
+                      const source = graphNodesById.get(edge.source_node_id);
+                      const target = graphNodesById.get(edge.target_node_id);
+                      if (!source || !target) return null;
+                      return (
+                        <li key={`${edge.source_node_id}-${edge.target_node_id}-${edge.relationship_type}-${index}`} className="text-[10px] text-slate-700 dark:text-slate-300 font-mono">
+                          Line {source.line_start} {edge.relationship_type} line {target.line_start}: {edge.supporting_evidence}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
               </div>
             )}
 

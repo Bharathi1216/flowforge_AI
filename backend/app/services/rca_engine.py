@@ -6,6 +6,7 @@ from typing import Any, Optional
 import httpx
 
 from app.config import settings
+from app.services.evidence_graph import graph_prompt_context
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +126,7 @@ def _build_rca_prompt(
     important_blocks: list[dict[str, Any]],
     differences: list[str],
     historical_precedents: list[dict[str, Any]],
+    evidence_graph: Optional[dict[str, Any]] = None,
 ) -> str:
     """
     Builds the fine-tuned LogSage-style RCA Analyst Prompt.
@@ -143,12 +145,24 @@ def _build_rca_prompt(
 
     precedents_formatted = []
     for p in historical_precedents:
-        precedents_formatted.append(
-            f"- Run #{p.get('runNumber')} (Similarity: {p.get('similarityPercent', 0)}%):\n"
-            f"  Root Cause: {p.get('rootCause', 'N/A')}\n"
-            f"  Suggested Fix: {p.get('suggestedFix', 'N/A')}"
-        )
+        if p.get("runStatus") == "success":
+            precedent = (
+                f"- Successful run #{p.get('runNumber')} (Similarity: {p.get('similarityPercent', 0)}%):\n"
+                f"  Known-good workflow context: {str(p.get('document', 'N/A'))[:1200]}"
+            )
+        else:
+            precedent = (
+                f"- Failed run #{p.get('runNumber')} (Similarity: {p.get('similarityPercent', 0)}%):\n"
+                f"  Root Cause: {p.get('rootCause') or 'N/A'}\n"
+                f"  Suggested Fix: {p.get('suggestedFix') or 'N/A'}"
+            )
+        precedents_formatted.append(precedent)
     precedents_text = "\n".join(precedents_formatted) if precedents_formatted else "- No similar historical precedents found in repository memory."
+    graph_text = (
+        graph_prompt_context(evidence_graph)
+        if evidence_graph
+        else "Evidence Graph unavailable; use the current log evidence without assuming causal relationships."
+    )
 
     prompt = f"""You are the FlowForge AI Diagnostic Engine, an advanced CI/CD Root Cause Analysis (RCA) intelligence system utilizing the LogSage methodology (ASE 2025).
 Your objective is to perform rigorous, fine-tuned root cause analysis on a failed GitHub Actions workflow run.
@@ -159,7 +173,9 @@ Your objective is to perform rigorous, fine-tuned root cause analysis on a faile
 3. CONCRETE REMEDIATION: The "suggested_fix" MUST provide exact, copy-pasteable commands, configuration diffs, or code patches directly addressing the root cause.
 4. CALIBRATED CONFIDENCE: Output a realistic float between 0.0 and 1.0 reflecting analytical certainty based on whether an explicit error trace is directly visible.
 5. STRICT BRANDING: NEVER mention third-party AI provider names or model names (e.g. do not mention Gemini, OpenAI, Claude). Refer to yourself solely as FlowForge AI Diagnostic Engine.
-6. FORMAT: Output MUST BE strictly a valid JSON object matching the schema below.
+6. Treat graph relationships as supporting evidence, not proof. A PRECEDES edge indicates order only; do not infer causation from it.
+7. Analyse the current run independently. Historical runs are references only; verify that any prior fix applies before recommending it.
+8. FORMAT: Output MUST BE strictly a valid JSON object matching the schema below.
 
 ### IN-CONTEXT FEW-SHOT DEMONSTRATIONS:
 {FEW_SHOT_EXEMPLARS}
@@ -204,6 +220,9 @@ Your objective is to perform rigorous, fine-tuned root cause analysis on a faile
 
 ### HISTORICAL PRECEDENTS (from FlowForge Semantic Memory):
 {precedents_text}
+
+### EVIDENCE GRAPH (deterministic event relationships and ranked candidates):
+{graph_text}
 
 Perform fine-tuned LogSage root cause analysis and output the JSON report:"""
     return prompt
@@ -446,6 +465,7 @@ async def run_rca(
     important_blocks: list[dict[str, Any]],
     differences: list[str],
     historical_precedents: list[dict[str, Any]],
+    evidence_graph: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """
     Executes the fine-tuned LogSage Root Cause Analysis engine.
@@ -464,6 +484,7 @@ async def run_rca(
         important_blocks=important_blocks,
         differences=differences,
         historical_precedents=historical_precedents,
+        evidence_graph=evidence_graph,
     )
 
     candidate_models = [settings.GEMINI_MODEL, "gemini-flash-lite-latest", "gemini-3-flash-preview"]
@@ -512,6 +533,7 @@ async def run_groq_rca(
     important_blocks: list[dict[str, Any]],
     differences: list[str],
     historical_precedents: list[dict[str, Any]],
+    evidence_graph: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Run the same RCA prompt through Groq's OpenAI-compatible API."""
     if not settings.GROQ_API_KEY:
@@ -524,7 +546,7 @@ async def run_groq_rca(
 
     prompt = _build_rca_prompt(
         workflow_name, failed_step, commit_sha, branch, structured_failure,
-        important_blocks, differences, historical_precedents,
+        important_blocks, differences, historical_precedents, evidence_graph,
     )
     request_payload = {
         "model": settings.GROQ_MODEL,

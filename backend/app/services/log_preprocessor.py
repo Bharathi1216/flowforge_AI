@@ -254,6 +254,7 @@ def preprocess_logs(
     context_before: Optional[int] = None,
     context_after: Optional[int] = None,
     max_tokens: Optional[int] = None,
+    additional_candidates: Optional[list[dict[str, Any]]] = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """
     Full LogSage Preprocessing Pipeline:
@@ -269,6 +270,27 @@ def preprocess_logs(
         failed_step_name=failed_step_name,
         successful_line_templates=successful_run_templates,
     )
+    existing_indices = {candidate["line_index"] for candidate in candidates}
+    for candidate in additional_candidates or []:
+        line_index = candidate.get("line_index")
+        if not isinstance(line_index, int) or not 0 <= line_index < len(raw_lines):
+            continue
+        if line_index in existing_indices:
+            existing = next(item for item in candidates if item["line_index"] == line_index)
+            existing["reasons"] = sorted(set(existing["reasons"]) | set(candidate.get("reasons", [])))
+            existing["score"] = max(existing["score"], float(candidate.get("score", 1.0)))
+            continue
+        candidates.append(
+            {
+                **candidate,
+                "line_number": line_index + 1,
+                "raw_line": raw_lines[line_index],
+                "normalized_line": normalize_line(raw_lines[line_index]),
+                "score": float(candidate.get("score", 1.0)),
+                "reasons": list(candidate.get("reasons", ["additional_candidate"])),
+            }
+        )
+        existing_indices.add(line_index)
 
     # Fallback: if no candidates found via strict keywords, take tail of log
     if not candidates:

@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     RCA_CONTEXT_BEFORE: int = Field(default=4, ge=1, le=20)
     RCA_CONTEXT_AFTER: int = Field(default=6, ge=1, le=30)
     RCA_MAX_TOKENS: int = Field(default=4000, ge=500, le=30000)
+    RCA_EVIDENCE_WEIGHT_TEMPORAL: float = Field(default=0.2, ge=0.0, le=1.0)
+    RCA_EVIDENCE_WEIGHT_RELEVANCE: float = Field(default=0.2, ge=0.0, le=1.0)
+    RCA_EVIDENCE_WEIGHT_RELATIONSHIPS: float = Field(default=0.2, ge=0.0, le=1.0)
+    RCA_EVIDENCE_WEIGHT_STRENGTH: float = Field(default=0.2, ge=0.0, le=1.0)
+    RCA_EVIDENCE_WEIGHT_BASELINE: float = Field(default=0.2, ge=0.0, le=1.0)
     RCA_KEYWORDS: str = Field(
         default="fatal,fail,failed,panic,error,exit,kill,no such file,missing,exception,cannot,traceback,npm ERR,exit code,exit status"
     )

@@ -113,6 +113,11 @@ async def analyze_failure(
         summarize_differences_from_successful,
     )
     from app.services.log_preprocessor import preprocess_logs
+    from app.services.evidence_graph import (
+        build_evidence_graph,
+        graph_context_line_candidates,
+        graph_response_summary,
+    )
     from app.services.rca_engine import PROMPT_VERSION, run_groq_rca, run_rca
     from app.services.vector_store import vector_store
 
@@ -216,21 +221,58 @@ async def analyze_failure(
         max_runs=3,
     )
 
-    # Step 3: Key Log Filtering, Expansion (4 before, 6 after), and Token Budget Pruning
+    # Step 3: Discover run-wide events and build a deterministic, uncertainty-aware graph.
+    graph_weights = {
+        "temporal": settings.RCA_EVIDENCE_WEIGHT_TEMPORAL,
+        "relevance": settings.RCA_EVIDENCE_WEIGHT_RELEVANCE,
+        "relationships": settings.RCA_EVIDENCE_WEIGHT_RELATIONSHIPS,
+        "evidence": settings.RCA_EVIDENCE_WEIGHT_STRENGTH,
+        "baseline": settings.RCA_EVIDENCE_WEIGHT_BASELINE,
+    }
+    try:
+        evidence_graph = build_evidence_graph(
+            raw_logs=combined_raw_logs,
+            run_id=workflow_run.github_run_id,
+            workflow_step=(
+                failed_step_name
+                if len(failures) == 1 and (failures[0].raw_logs or failures[0].error_snippet)
+                else None
+            ),
+            successful_templates=successful_templates or None,
+            weights=graph_weights,
+        )
+    except Exception:
+        logger.exception(
+            "Evidence Graph construction failed for run %s; continuing with legacy RCA inputs",
+            workflow_run.github_run_id,
+        )
+        evidence_graph = {
+            "version": "egfa-v1",
+            "run_id": str(workflow_run.github_run_id),
+            "nodes": [],
+            "edges": [],
+            "root_cause_candidates": [],
+            "insufficient_evidence": True,
+            "line_count": len(raw_lines),
+        }
+
+    # Step 4: Preserve the existing context windows and reserve prompt budget for graph context.
     important_blocks, candidate_lines = preprocess_logs(
         raw_logs=combined_raw_logs,
         failed_step_name=failed_step_name,
         successful_run_templates=successful_templates,
+        max_tokens=max(100, int(settings.RCA_MAX_TOKENS * 0.8)),
+        additional_candidates=graph_context_line_candidates(evidence_graph),
     )
 
-    # Step 4: Run Differences vs. Successful Baseline
+    # Step 5: Run Differences vs. Successful Baseline
     differences = summarize_differences_from_successful(
         failed_lines=raw_lines,
         successful_templates=successful_templates,
         failed_step_name=failed_step_name,
     )
 
-    # Step 5: Deterministic Structured Failure & Normalized Fingerprint Extraction
+    # Step 6: Deterministic Structured Failure & Normalized Fingerprint Extraction
     structured = extract_structured_failure(
         workflow_name=workflow_run.workflow_name,
         run_id=workflow_run.github_run_id,
@@ -243,8 +285,9 @@ async def analyze_failure(
         repo_language=repository.language,
     )
     fingerprint = generate_failure_fingerprint(structured)
+    structured["evidence_graph"] = evidence_graph
 
-    # Step 6: Embed the current failure and retrieve RAG context from pgvector.
+    # Step 7: Embed the current failure and retrieve RAG context from pgvector.
     # Retrieval is optional: an embedding/database outage must not prevent the
     # current failure from reaching Gemini or the deterministic RCA fallback.
     critical_log_text = "\n".join(
@@ -277,7 +320,7 @@ async def analyze_failure(
         similar_runs = []
     similar_match = similar_runs[0] if similar_runs else None
 
-    # Step 7: Generate RCA from the current error plus retrieved RAG context.
+    # Step 8: Generate RCA from the current error plus retrieved RAG context.
     # run_rca falls back to deterministic regex/heuristic analysis when the
     # model is unavailable or returns an unusable response.
     common_rca_args = {
@@ -289,6 +332,7 @@ async def analyze_failure(
         "important_blocks": important_blocks,
         "differences": differences,
         "historical_precedents": similar_runs,
+        "evidence_graph": evidence_graph,
     }
     rca_result = await run_rca(**common_rca_args) if gemini_needs_run else _primary_result_from_cache(gemini_cached)
     groq_result = await run_groq_rca(**common_rca_args) if groq_needs_run else {
@@ -301,7 +345,7 @@ async def analyze_failure(
         "log_analysis": groq_cached.get("logAnalysis", []),
     }
 
-    # Step 8: Persistence to Database
+    # Step 9: Persistence to Database
     root_cause_str = (
         "\n".join(rca_result["root_cause"])
         if isinstance(rca_result.get("root_cause"), list)
@@ -346,6 +390,7 @@ async def analyze_failure(
         "evidence": primary_result.get("evidence", []),
         "logAnalysis": primary_result.get("log_analysis", []),
         "importantLogBlocks": important_blocks,
+        "evidenceGraph": graph_response_summary(evidence_graph),
         "failureFingerprint": fingerprint,
         "analysisStatus": rca_result.get("analysis_status", "completed"),
         "rawLogs": combined_raw_logs,
@@ -401,7 +446,7 @@ async def analyze_failure(
         db.add(new_failure)
     db.commit()
 
-    # Step 9: Index verified failure into PGVector
+    # Step 10: Index verified failure into pgvector.
     try:
         vector_store.index_failure(
             repo_id=str(repository.id),

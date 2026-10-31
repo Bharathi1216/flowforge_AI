@@ -118,6 +118,7 @@ export interface FailureAnalysis {
   suggestedFix: string;
   confidence?: number;
   evidence?: string[];
+  evidenceGraph?: EvidenceGraphSummary;
   logAnalysis?: LogAnalysisBlock[];
   importantLogBlocks?: ImportantLogBlock[];
   failureFingerprint?: string;
@@ -132,6 +133,43 @@ export interface FailureAnalysis {
     gemini?: ProviderAnalysis;
     groq?: ProviderAnalysis;
   };
+}
+
+export interface EvidenceGraphEvent {
+  event_id: string;
+  category: string;
+  component: string;
+  severity: string;
+  line_start: number;
+  line_end: number;
+  workflow_step?: string | null;
+  original_message: string;
+  identifiers: string[];
+}
+
+export interface EvidenceGraphEdge {
+  source_node_id: string;
+  target_node_id: string;
+  relationship_type: string;
+  supporting_evidence: string;
+  relationship_confidence: number;
+}
+
+export interface EvidenceGraphCandidate {
+  event_id: string;
+  rank: number;
+  score: number;
+  reasons: string[];
+  score_interpretation: string;
+}
+
+export interface EvidenceGraphSummary {
+  version: string;
+  nodes: EvidenceGraphEvent[];
+  edges: EvidenceGraphEdge[];
+  root_cause_candidates: EvidenceGraphCandidate[];
+  insufficient_evidence: boolean;
+  line_count: number;
 }
 
 export interface ProviderAnalysis {
