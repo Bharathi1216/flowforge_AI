@@ -32,6 +32,33 @@ class ChatRequest(BaseModel):
     run_id: Optional[str] = None
 
 
+def _cached_analysis_response(failure: FailureLog) -> dict | None:
+    """Return the immutable response saved for a completed run."""
+    if failure.analysis_status not in {"completed", "fallback"} or not failure.analysis_result:
+        return None
+    try:
+        cached = json.loads(failure.analysis_result)
+    except (TypeError, json.JSONDecodeError):
+        logger.warning("Ignoring malformed cached RCA result for failure %s", failure.id)
+        return None
+    return cached if isinstance(cached, dict) else None
+
+
+def _is_final_provider_result(result: dict | None) -> bool:
+    return bool(result and result.get("status") in {"completed", "fallback"})
+
+
+def _primary_result_from_cache(cached: dict) -> dict:
+    return {
+        "root_cause": [cached.get("rootCause", "")],
+        "suggested_fix": cached.get("suggestedFix", ""),
+        "confidence": cached.get("confidence", 0.85),
+        "evidence": cached.get("evidence", []),
+        "log_analysis": cached.get("logAnalysis", []),
+        "analysis_status": cached.get("analysisStatus", "completed"),
+    }
+
+
 async def _generate_gemini_response(prompt: str) -> str:
     from google import genai
     client = genai.Client(api_key=settings.GEMINI_API_KEY)
@@ -73,6 +100,7 @@ def _find_repo(repo_id: str, user_id: int, db: Session) -> Repository | None:
 async def analyze_failure(
     repo_id: str,
     run_id: str,
+    reanalyze: bool = False,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -85,7 +113,7 @@ async def analyze_failure(
         summarize_differences_from_successful,
     )
     from app.services.log_preprocessor import preprocess_logs
-    from app.services.rca_engine import PROMPT_VERSION, run_rca
+    from app.services.rca_engine import PROMPT_VERSION, run_groq_rca, run_rca
     from app.services.vector_store import vector_store
 
     repository = _find_repo(repo_id, user.id, db)
@@ -103,6 +131,51 @@ async def analyze_failure(
         raise HTTPException(status_code=404, detail="Workflow run not found")
 
     failures = db.query(FailureLog).filter(FailureLog.workflow_run_id == workflow_run.id).all()
+    existing_cached_response = next(
+        (cached for failure in failures if (cached := _cached_analysis_response(failure))),
+        None,
+    )
+    cached_providers = (existing_cached_response or {}).get("providers", {})
+    stored_failure = failures[0] if failures else None
+    for provider_name, attribute_name in (("gemini", "gemini_result"), ("groq", "groq_result")):
+        stored_result = getattr(stored_failure, attribute_name, None) if stored_failure else None
+        if stored_result:
+            try:
+                cached_providers[provider_name] = json.loads(stored_result)
+            except json.JSONDecodeError:
+                logger.warning("Ignoring malformed saved %s result for run %s", provider_name, run_id)
+
+    if reanalyze and failures:
+        for failure in failures:
+            failure.analysis_result = None
+            failure.provider_results = None
+            failure.gemini_result = None
+            failure.groq_result = None
+        db.commit()
+        existing_cached_response = None
+        cached_providers = {}
+
+    gemini_cached = cached_providers.get("gemini")
+    if not gemini_cached and existing_cached_response:
+        gemini_cached = {
+            "provider": "Gemini",
+            "status": existing_cached_response.get("analysisStatus", "completed"),
+            "model": existing_cached_response.get("model"),
+            "summary": existing_cached_response.get("summary", ""),
+            "rootCause": existing_cached_response.get("rootCause", ""),
+            "suggestedFix": existing_cached_response.get("suggestedFix", ""),
+            "confidence": existing_cached_response.get("confidence"),
+            "evidence": existing_cached_response.get("evidence", []),
+            "logAnalysis": existing_cached_response.get("logAnalysis", []),
+        }
+    groq_cached = cached_providers.get("groq")
+    gemini_needs_run = not _is_final_provider_result(gemini_cached)
+    groq_needs_run = not _is_final_provider_result(groq_cached)
+
+    if not gemini_needs_run and not groq_needs_run and existing_cached_response:
+        cached_response = dict(existing_cached_response)
+        cached_response["providers"] = cached_providers
+        return cached_response
 
     # Step 1: Collect & preserve complete raw logs
     raw_logs_parts = []
@@ -207,16 +280,26 @@ async def analyze_failure(
     # Step 7: Generate RCA from the current error plus retrieved RAG context.
     # run_rca falls back to deterministic regex/heuristic analysis when the
     # model is unavailable or returns an unusable response.
-    rca_result = await run_rca(
-        workflow_name=workflow_run.workflow_name,
-        failed_step=failed_step_name,
-        commit_sha=workflow_run.commit_sha or "HEAD",
-        branch=workflow_run.branch,
-        structured_failure=structured,
-        important_blocks=important_blocks,
-        differences=differences,
-        historical_precedents=similar_runs,
-    )
+    common_rca_args = {
+        "workflow_name": workflow_run.workflow_name,
+        "failed_step": failed_step_name,
+        "commit_sha": workflow_run.commit_sha or "HEAD",
+        "branch": workflow_run.branch,
+        "structured_failure": structured,
+        "important_blocks": important_blocks,
+        "differences": differences,
+        "historical_precedents": similar_runs,
+    }
+    rca_result = await run_rca(**common_rca_args) if gemini_needs_run else _primary_result_from_cache(gemini_cached)
+    groq_result = await run_groq_rca(**common_rca_args) if groq_needs_run else {
+        "analysis_status": groq_cached.get("status", "completed"),
+        "model": groq_cached.get("model"),
+        "root_cause": [groq_cached.get("rootCause", "")],
+        "suggested_fix": groq_cached.get("suggestedFix", ""),
+        "confidence": groq_cached.get("confidence"),
+        "evidence": groq_cached.get("evidence", []),
+        "log_analysis": groq_cached.get("logAnalysis", []),
+    }
 
     # Step 8: Persistence to Database
     root_cause_str = (
@@ -228,6 +311,55 @@ async def analyze_failure(
     structured_json = json.dumps(structured)
     blocks_json = json.dumps(important_blocks)
     confidence_val = rca_result.get("confidence", 0.85)
+
+    def provider_payload(result: dict, provider: str) -> dict:
+        return {
+            "provider": provider,
+            "status": result.get("analysis_status", "completed"),
+            "model": result.get("model"),
+            "summary": result.get("root_cause", [""])[0] if result.get("root_cause") else "",
+            "rootCause": "\n".join(result.get("root_cause", [])),
+            "suggestedFix": result.get("suggested_fix", ""),
+            "confidence": result.get("confidence"),
+            "evidence": result.get("evidence", []),
+            "logAnalysis": result.get("log_analysis", []),
+            "error": result.get("error"),
+        }
+
+    providers = {
+        "gemini": gemini_cached if not gemini_needs_run else provider_payload(rca_result, "Gemini"),
+        "groq": groq_cached if not groq_needs_run else provider_payload(groq_result, "Groq"),
+    }
+    primary_result = rca_result
+    analysis_response = {
+        "id": f"analysis-{run_id}",
+        "runId": run_id,
+        "title": f"Workflow Run #{workflow_run.run_number} Diagnostics",
+        "summary": (
+            primary_result["root_cause"][0]
+            if (isinstance(primary_result.get("root_cause"), list) and primary_result["root_cause"])
+            else (root_cause_str or f"Diagnostics for run #{workflow_run.run_number}")
+        ),
+        "rootCause": "\n".join(primary_result.get("root_cause", [])),
+        "suggestedFix": primary_result.get("suggested_fix", ""),
+        "confidence": primary_result.get("confidence", confidence_val),
+        "evidence": primary_result.get("evidence", []),
+        "logAnalysis": primary_result.get("log_analysis", []),
+        "importantLogBlocks": important_blocks,
+        "failureFingerprint": fingerprint,
+        "analysisStatus": rca_result.get("analysis_status", "completed"),
+        "rawLogs": combined_raw_logs,
+        "similarPreviousRunId": similar_match["runId"] if similar_match else None,
+        "similarPreviousRunNumber": similar_match["runNumber"] if similar_match else None,
+        "similarMatchPercent": similar_match["similarityPercent"] if similar_match else None,
+        "relevantDocs": [
+            {"title": "GitHub Actions Documentation", "url": "https://docs.github.com/en/actions"},
+            {"title": "Workflow Syntax Reference", "url": "https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions"},
+        ],
+        "previousDiscussions": [],
+        "providers": providers,
+    }
+    analysis_result_json = json.dumps(analysis_response, separators=(",", ":"))
 
     if failures:
         for failure in failures:
@@ -241,6 +373,10 @@ async def analyze_failure(
             failure.analysis_status = rca_result.get("analysis_status", "completed")
             failure.model = rca_result.get("model", "FlowForge RCA Engine (LogSage)")
             failure.prompt_version = PROMPT_VERSION
+            failure.analysis_result = analysis_result_json
+            failure.provider_results = json.dumps(providers, separators=(",", ":"))
+            failure.gemini_result = json.dumps(providers["gemini"], separators=(",", ":"))
+            failure.groq_result = json.dumps(providers["groq"], separators=(",", ":"))
     else:
         new_failure = FailureLog(
             workflow_run_id=workflow_run.id,
@@ -257,6 +393,10 @@ async def analyze_failure(
             analysis_status=rca_result.get("analysis_status", "completed"),
             model=rca_result.get("model", "FlowForge RCA Engine (LogSage)"),
             prompt_version=PROMPT_VERSION,
+            analysis_result=analysis_result_json,
+            provider_results=json.dumps(providers, separators=(",", ":")),
+            gemini_result=json.dumps(providers["gemini"], separators=(",", ":")),
+            groq_result=json.dumps(providers["groq"], separators=(",", ":")),
         )
         db.add(new_failure)
     db.commit()
@@ -277,33 +417,7 @@ async def analyze_failure(
     except Exception as idx_err:
         logger.warning("Error indexing failure to vector store: %s", idx_err)
 
-    return {
-        "id": f"analysis-{run_id}",
-        "runId": run_id,
-        "title": f"Workflow Run #{workflow_run.run_number} Diagnostics",
-        "summary": (
-            rca_result["root_cause"][0]
-            if (isinstance(rca_result.get("root_cause"), list) and rca_result["root_cause"])
-            else (root_cause_str or f"Diagnostics for run #{workflow_run.run_number}")
-        ),
-        "rootCause": root_cause_str,
-        "suggestedFix": rca_result.get("suggested_fix", ""),
-        "confidence": confidence_val,
-        "evidence": rca_result.get("evidence", []),
-        "logAnalysis": rca_result.get("log_analysis", []),
-        "importantLogBlocks": important_blocks,
-        "failureFingerprint": fingerprint,
-        "analysisStatus": rca_result.get("analysis_status", "completed"),
-        "rawLogs": combined_raw_logs,
-        "similarPreviousRunId": similar_match["runId"] if similar_match else None,
-        "similarPreviousRunNumber": similar_match["runNumber"] if similar_match else None,
-        "similarMatchPercent": similar_match["similarityPercent"] if similar_match else None,
-        "relevantDocs": [
-            {"title": "GitHub Actions Documentation", "url": "https://docs.github.com/en/actions"},
-            {"title": "Workflow Syntax Reference", "url": "https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions"},
-        ],
-        "previousDiscussions": [],
-    }
+    return analysis_response
 
 
 @router.post("/ai/chat")

@@ -1,3 +1,4 @@
+import re
 from typing import Optional
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -6,7 +7,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.db.models import Discussion, DiscussionComment, Repository, User
+from app.db.models import Discussion, DiscussionComment, Repository, User, WorkflowRun
 from app.routers.auth import get_current_user
 
 router = APIRouter(prefix="/repositories/{repo_id}/discussions", tags=["discussions"])
@@ -21,6 +22,9 @@ class DiscussionCreate(BaseModel):
     title: str = Field(min_length=1, max_length=255)
     content: str = Field(min_length=1)
     run_id: str | None = None
+
+
+RUN_MARKER = re.compile(r"<!--\s*flowforge-run-id:([^\s>]+)\s*-->")
 
 
 class DiscussionUpdate(BaseModel):
@@ -87,12 +91,13 @@ def _user_payload(account: dict | None) -> dict[str, str]:
 
 def _discussion_payload(issue: dict, repository: Repository) -> dict:
     author = _user_payload(issue.get("user"))
+    body = RUN_MARKER.sub("", issue.get("body") or "").rstrip()
     return {
         "id": str(issue["number"]),
         "repoId": repository.name,
         "runId": None,
         "title": issue.get("title") or "Untitled discussion",
-        "content": issue.get("body") or "",
+        "content": body,
         "author": author,
         "status": "open" if issue.get("state") == "open" else "resolved",
         "createdAt": issue.get("created_at"),
@@ -117,6 +122,19 @@ def _comment_payload(comment: dict, issue_number: str) -> dict:
 def _sync_discussion_to_db(issue: dict, repository: Repository, user: User, db: Session) -> Discussion:
     title = issue.get("title") or "Untitled discussion"
     status_str = "open" if issue.get("state") == "open" else "resolved"
+    body = issue.get("body") or ""
+    display_body = RUN_MARKER.sub("", body).rstrip()
+    marker = RUN_MARKER.search(body)
+    workflow_run = None
+    if marker:
+        workflow_run = (
+            db.query(WorkflowRun)
+            .filter(
+                WorkflowRun.repository_id == repository.id,
+                WorkflowRun.github_run_id == marker.group(1),
+            )
+            .one_or_none()
+        )
     disc = (
         db.query(Discussion)
         .filter(
@@ -124,21 +142,31 @@ def _sync_discussion_to_db(issue: dict, repository: Repository, user: User, db: 
             Discussion.github_issue_number == int(issue["number"]),
         )
         .first()
-    )
+    ).first()
+    if not disc and workflow_run:
+        disc = (
+            db.query(Discussion)
+            .filter(
+                Discussion.repository_id == repository.id,
+                Discussion.workflow_run_id == workflow_run.id,
+            )
+            .first()
+        )
     if not disc:
         disc = Discussion(
             repository_id=repository.id,
             user_id=user.id,
             github_issue_number=int(issue["number"]),
             title=title,
-            content=issue.get("body") or "",
+            content=display_body,
             status=status_str,
+            workflow_run_id=workflow_run.id if workflow_run else None,
         )
         db.add(disc)
         db.flush()
     else:
         disc.status = status_str
-        disc.content = issue.get("body") or ""
+        disc.content = display_body
     return disc
 
 
@@ -286,8 +314,46 @@ async def create_discussion(
 ) -> dict:
     repository = _repository(repo_id, user.id, db)
     body = payload.content.strip()
+    workflow_run = None
     if payload.run_id:
-        body = f"{body}\n\nGitHub Actions run ID: {payload.run_id}"
+        run_filter = (
+            (WorkflowRun.repository_id == repository.id)
+            & (WorkflowRun.github_run_id == str(payload.run_id))
+        )
+        if str(payload.run_id).isdigit():
+            run_filter = (
+                (WorkflowRun.repository_id == repository.id)
+                & (
+                    (WorkflowRun.github_run_id == str(payload.run_id))
+                    | (WorkflowRun.id == int(payload.run_id))
+                )
+            )
+        workflow_run = db.query(WorkflowRun).filter(run_filter).one_or_none()
+        if workflow_run:
+            existing = (
+                db.query(Discussion)
+                .filter(
+                    Discussion.repository_id == repository.id,
+                    Discussion.workflow_run_id == workflow_run.id,
+                )
+                .first()
+            )
+            if existing:
+                if existing.github_issue_number:
+                    return _discussion_payload(
+                        {
+                            "number": existing.github_issue_number,
+                            "title": existing.title,
+                            "body": existing.content,
+                            "state": "closed" if existing.status == "resolved" else "open",
+                            "created_at": existing.created_at.isoformat() if existing.created_at else None,
+                            "updated_at": existing.updated_at.isoformat() if existing.updated_at else None,
+                            "user": {"login": user.username, "id": user.github_id, "avatar_url": user.avatar_url},
+                            "comments": len(existing.comments or []),
+                        },
+                        repository,
+                    )
+        body = f"{body}\n\n<!-- flowforge-run-id:{workflow_run.github_run_id if workflow_run else payload.run_id} -->"
     async with httpx.AsyncClient(timeout=15) as client:
         response = await client.post(
             f"{GITHUB_API}/repos/{repository.full_name}/issues",
@@ -298,7 +364,9 @@ async def create_discussion(
     created_issue = response.json()
 
     # Mirror to local DB
-    _sync_discussion_to_db(created_issue, repository, user, db)
+    discussion = _sync_discussion_to_db(created_issue, repository, user, db)
+    if workflow_run:
+        discussion.workflow_run_id = workflow_run.id
     db.commit()
 
     return _discussion_payload(created_issue, repository)

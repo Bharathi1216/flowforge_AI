@@ -27,6 +27,14 @@ export const aiService = {
     }
   },
 
+  async reanalyzeFailure(runId: string, repoName?: string): Promise<FailureAnalysis | null> {
+    const targetRepo = repoName || 'repository';
+    const response = await apiClient.post<FailureAnalysis>(
+      `/repositories/${encodeURIComponent(targetRepo)}/workflows/${encodeURIComponent(runId)}/analysis?reanalyze=true`
+    );
+    return response.data;
+  },
+
   async chatWithAssistant(repoId: string, messages: AIMessage[]): Promise<AIMessage> {
     try {
       const response = await apiClient.post<AIMessage>(

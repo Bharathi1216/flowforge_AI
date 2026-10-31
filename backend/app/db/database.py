@@ -52,6 +52,10 @@ def init_db():
             ("analysis_status", "VARCHAR(50)"),
             ("model", "VARCHAR(100)"),
             ("prompt_version", "VARCHAR(50)"),
+            ("analysis_result", "TEXT"),
+            ("provider_results", "TEXT"),
+            ("gemini_result", "TEXT"),
+            ("groq_result", "TEXT"),
         ],
     }
     with engine.begin() as connection:
@@ -92,6 +96,13 @@ def init_db():
                     connection.execute(text(
                         f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column_name} {column_type}"
                     ))
+        connection.execute(text(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_discussion_repository_run
+            ON discussions(repository_id, workflow_run_id)
+            WHERE workflow_run_id IS NOT NULL
+            """
+        ))
         # Ensure ai_confidence is double precision float
         connection.execute(text(
             "ALTER TABLE failure_logs ALTER COLUMN ai_confidence TYPE double precision USING ai_confidence::double precision;"

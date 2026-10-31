@@ -90,6 +90,17 @@ CREATE TABLE IF NOT EXISTS failure_logs (
     error_snippet TEXT,
     root_cause TEXT,
     suggested_fix TEXT,
+    failure_fingerprint VARCHAR(255),
+    structured_failure TEXT,
+    important_log_blocks TEXT,
+    evidence TEXT,
+    analysis_status VARCHAR(50) DEFAULT 'completed',
+    model VARCHAR(100),
+    prompt_version VARCHAR(50) DEFAULT 'rca-v1',
+    analysis_result TEXT,
+    provider_results TEXT,
+    gemini_result TEXT,
+    groq_result TEXT,
     ai_confidence INTEGER DEFAULT 90,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
@@ -124,5 +135,8 @@ CREATE INDEX IF NOT EXISTS idx_failure_logs_run ON failure_logs(workflow_run_id)
 CREATE INDEX IF NOT EXISTS idx_discussions_repo ON discussions(repository_id);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_discussion_repository_issue
     ON discussions(repository_id, github_issue_number);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_discussion_repository_run
+    ON discussions(repository_id, workflow_run_id)
+    WHERE workflow_run_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_workflow_run_repository_github_id
     ON workflow_runs(repository_id, github_run_id);

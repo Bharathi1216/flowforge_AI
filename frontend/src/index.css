@@ -97,3 +97,49 @@
     background: rgba(168, 85, 247, 0.6);
   }
 }
+
+@layer utilities {
+  .light .text-slate-300 {
+    color: #334155 !important;
+  }
+
+  .light .text-slate-400 {
+    color: #334155 !important;
+  }
+
+  .light .text-slate-500 {
+    color: #1e293b !important;
+  }
+
+  .light .text-slate-600 {
+    color: #1e293b !important;
+  }
+
+  .light .text-purple-300 {
+    color: #5b21b6 !important;
+  }
+
+  .light .text-purple-400 {
+    color: #6d28d9 !important;
+  }
+
+  .light .text-cyan-300 {
+    color: #155e75 !important;
+  }
+
+  .light .text-indigo-300 {
+    color: #3730a3 !important;
+  }
+
+  .light .text-rose-300 {
+    color: #9f1239 !important;
+  }
+
+  .light .text-amber-300 {
+    color: #92400e !important;
+  }
+
+  .light .text-emerald-300 {
+    color: #047857 !important;
+  }
+}

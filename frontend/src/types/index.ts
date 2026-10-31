@@ -128,6 +128,23 @@ export interface FailureAnalysis {
   similarMatchPercent?: number;
   relevantDocs: { title: string; url: string }[];
   previousDiscussions: { id: string; title: string }[];
+  providers?: {
+    gemini?: ProviderAnalysis;
+    groq?: ProviderAnalysis;
+  };
+}
+
+export interface ProviderAnalysis {
+  provider: string;
+  status: 'completed' | 'fallback' | 'failed' | 'unavailable' | 'pending';
+  model?: string;
+  summary: string;
+  rootCause: string;
+  suggestedFix: string;
+  confidence?: number;
+  evidence?: string[];
+  logAnalysis?: LogAnalysisBlock[];
+  error?: string;
 }
 
 export interface Discussion {

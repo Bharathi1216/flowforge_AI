@@ -399,7 +399,6 @@ export const RepositoryWorkspace: React.FC = () => {
             selectedDiscussion={selectedDiscussion}
             comments={comments}
             onSelectDiscussion={handleSelectDiscussion}
-            onCreateDiscussion={handleCreateDiscussion}
             onAddComment={handleAddComment}
             onResolveDiscussion={handleResolveDiscussion}
           />

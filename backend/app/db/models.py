@@ -111,6 +111,10 @@ class FailureLog(Base):
     analysis_status = Column(String(50), default="completed")
     model = Column(String(100), nullable=True)
     prompt_version = Column(String(50), default="rca-v1")
+    analysis_result = Column(Text, nullable=True)
+    provider_results = Column(Text, nullable=True)
+    gemini_result = Column(Text, nullable=True)
+    groq_result = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     workflow_run = relationship("WorkflowRun", back_populates="failure_logs")

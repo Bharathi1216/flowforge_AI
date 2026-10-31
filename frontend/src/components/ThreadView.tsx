@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import axios from 'axios';
 import { 
-  MessageSquare, Plus, Send, Pin, ArrowLeft, 
+  MessageSquare, Send, Pin,
   Terminal, Bot, Check, Copy, Sparkles
 } from 'lucide-react';
 import { Discussion, Comment } from '../types';
@@ -15,11 +15,8 @@ interface ThreadViewProps {
   selectedDiscussion: Discussion | null;
   comments: Comment[];
   onSelectDiscussion: (disc: Discussion) => void;
-  onCreateDiscussion: (title: string, content: string) => Promise<boolean>;
   onAddComment: (discId: string, text: string) => Promise<void>;
   onResolveDiscussion?: (discId: string, status: 'resolved' | 'open') => Promise<void>;
-  initialNewThreadTitle?: string;
-  initialNewThreadContent?: string;
 }
 
 export const ThreadView: React.FC<ThreadViewProps> = ({
@@ -27,36 +24,14 @@ export const ThreadView: React.FC<ThreadViewProps> = ({
   selectedDiscussion,
   comments,
   onSelectDiscussion,
-  onCreateDiscussion,
   onAddComment,
-  onResolveDiscussion,
-  initialNewThreadTitle = '',
-  initialNewThreadContent = ''
+  onResolveDiscussion
 }) => {
   const { success, error: showError } = useToast();
   const { openAssistant } = useAIAssistant();
-  const [isCreating, setIsCreating] = useState(!!initialNewThreadTitle);
-  const [newTitle, setNewTitle] = useState(initialNewThreadTitle);
-  const [newContent, setNewContent] = useState(initialNewThreadContent);
   const [replyText, setReplyText] = useState('');
   const [isResolving, setIsResolving] = useState(false);
   const [copiedFix, setCopiedFix] = useState(false);
-
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newTitle.trim() || !newContent.trim()) return;
-    try {
-      const created = await onCreateDiscussion(newTitle, newContent);
-      if (!created) return;
-      success('Discussion thread published to GitHub.', 'Thread Created');
-      setNewTitle('');
-      setNewContent('');
-      setIsCreating(false);
-    } catch (error) {
-      const detail = axios.isAxiosError(error) ? error.response?.data?.detail : null;
-      showError(typeof detail === 'string' ? detail : 'Could not create a discussion thread.', 'Thread not created');
-    }
-  };
 
   const handleToggleResolve = async () => {
     if (!selectedDiscussion || !onResolveDiscussion) return;
@@ -119,13 +94,6 @@ npm install react@^18.2.0 react-dom@^18.2.0`;
               </h3>
               <p className="text-[10px] text-slate-500 dark:text-slate-400">Team failure discussions & solutions</p>
             </div>
-            <button
-              onClick={() => setIsCreating(true)}
-              className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold transition-all shadow-sm"
-            >
-              <Plus className="h-3.5 w-3.5" />
-              <span>New</span>
-            </button>
           </div>
 
           <div className="space-y-2.5 max-h-[540px] overflow-y-auto pr-1 scrollbar-terminal">
@@ -136,11 +104,10 @@ npm install react@^18.2.0 react-dom@^18.2.0`;
                 <div
                   key={disc.id}
                   onClick={() => {
-                    setIsCreating(false);
                     onSelectDiscussion(disc);
                   }}
                   className={`p-3.5 rounded-xl border cursor-pointer transition-all ${
-                    isSelected && !isCreating
+                    isSelected
                       ? 'border-purple-500 bg-purple-50/60 dark:bg-purple-950/20 text-slate-900 dark:text-white shadow-sm'
                       : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/40 text-slate-600 dark:text-slate-400 hover:border-slate-300 dark:hover:border-slate-700'
                   }`}
@@ -184,61 +151,7 @@ npm install react@^18.2.0 react-dom@^18.2.0`;
 
       {/* Right Column: Interactive Thread View */}
       <div className="lg:col-span-8 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0E121D] p-5 shadow-sm flex flex-col justify-between space-y-4">
-        {isCreating ? (
-          /* Create New Thread Form */
-          <form onSubmit={handleCreate} className="space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setIsCreating(false)}
-                  className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 text-slate-600 hover:text-slate-900 dark:hover:text-white"
-                >
-                  <ArrowLeft className="h-4 w-4" />
-                </button>
-                <h3 className="text-sm font-bold text-slate-900 dark:text-white">Start New Discussion Thread</h3>
-              </div>
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 font-mono">Thread Subject</label>
-              <input
-                type="text"
-                placeholder="e.g. Build Failure #92: npm ERESOLVE Conflict"
-                value={newTitle}
-                onChange={(e) => setNewTitle(e.target.value)}
-                className="w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 p-3 text-xs text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-purple-500/40"
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 font-mono">Pushed Failure Logs & Details</label>
-              <textarea
-                rows={7}
-                placeholder="Paste failure logs, error traces, or diagnostic queries..."
-                value={newContent}
-                onChange={(e) => setNewContent(e.target.value)}
-                className="w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-900 p-3 text-xs font-mono text-rose-300 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-purple-500/40"
-              />
-            </div>
-
-            <div className="flex justify-end gap-3 pt-2">
-              <button
-                type="button"
-                onClick={() => setIsCreating(false)}
-                className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-800 text-xs font-bold text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                className="px-5 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-xs font-bold text-white shadow-sm"
-              >
-                Publish to Team
-              </button>
-            </div>
-          </form>
-        ) : selectedDiscussion ? (
+        {selectedDiscussion ? (
           /* Active Thread View */
           <div className="flex flex-col h-full justify-between space-y-4">
             <div className="max-h-[380px] overflow-y-auto space-y-4 pr-1 scrollbar-terminal">
@@ -411,4 +324,3 @@ npm install react@^18.2.0 react-dom@^18.2.0`;
     </div>
   );
 };
-

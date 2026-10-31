@@ -3,6 +3,7 @@ import json
 import logging
 import re
 from typing import Any, Optional
+import httpx
 
 from app.config import settings
 
@@ -454,7 +455,6 @@ async def run_rca(
     if not settings.GEMINI_API_KEY:
         logger.info("No LLM API key configured; using deterministic heuristic fallback.")
         return _heuristic_fallback(structured_failure, important_blocks)
-
     prompt = _build_rca_prompt(
         workflow_name=workflow_name,
         failed_step=failed_step,
@@ -480,7 +480,7 @@ async def run_rca(
 
     client = genai.Client(api_key=settings.GEMINI_API_KEY)
     config = types.GenerateContentConfig(
-        temperature=0.1,
+        temperature=0.0,
         response_mime_type="application/json",
     )
 
@@ -501,3 +501,83 @@ async def run_rca(
 
     logger.warning("All candidate models failed or returned empty; using fine-tuned heuristic fallback.")
     return _heuristic_fallback(structured_failure, important_blocks)
+
+
+async def run_groq_rca(
+    workflow_name: str,
+    failed_step: str,
+    commit_sha: str,
+    branch: str,
+    structured_failure: dict[str, Any],
+    important_blocks: list[dict[str, Any]],
+    differences: list[str],
+    historical_precedents: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Run the same RCA prompt through Groq's OpenAI-compatible API."""
+    if not settings.GROQ_API_KEY:
+        return {
+            **_heuristic_fallback(structured_failure, important_blocks),
+            "analysis_status": "unavailable",
+            "model": settings.GROQ_MODEL,
+            "error": "GROQ_API_KEY is not configured",
+        }
+
+    prompt = _build_rca_prompt(
+        workflow_name, failed_step, commit_sha, branch, structured_failure,
+        important_blocks, differences, historical_precedents,
+    )
+    request_payload = {
+        "model": settings.GROQ_MODEL,
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": "Return only the requested JSON object."},
+            {"role": "user", "content": prompt},
+        ],
+    }
+    try:
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            response = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {settings.GROQ_API_KEY}"},
+                json=request_payload,
+            )
+            if response.status_code == 400:
+                request_payload.pop("response_format", None)
+                response = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {settings.GROQ_API_KEY}"},
+                    json=request_payload,
+                )
+            response.raise_for_status()
+            response_body = response.json()
+            choices = response_body.get("choices")
+            if not isinstance(choices, list) or not choices:
+                raise ValueError("Groq returned no completion choices")
+            message = choices[0].get("message", {})
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, str) or not content.strip():
+                raise ValueError("Groq returned an empty completion")
+            result = _parse_and_validate_rca_json(content)
+            result["model"] = settings.GROQ_MODEL
+            return result
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "Groq RCA request failed with HTTP %s: %s",
+            exc.response.status_code,
+            exc.response.text[:500],
+        )
+        return {
+            **_heuristic_fallback(structured_failure, important_blocks),
+            "analysis_status": "failed",
+            "model": settings.GROQ_MODEL,
+            "error": f"Groq Cloud HTTP {exc.response.status_code}: {exc.response.text[:240]}",
+        }
+    except Exception as exc:
+        logger.warning("Groq RCA request failed: %s", exc)
+        return {
+            **_heuristic_fallback(structured_failure, important_blocks),
+            "analysis_status": "failed",
+            "model": settings.GROQ_MODEL,
+            "error": f"Groq analysis failed: {str(exc)[:240]}",
+        }

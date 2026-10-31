@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     # Google Gemini AI Settings
     GEMINI_API_KEY: str = Field(..., min_length=1)
     GEMINI_MODEL: str = Field(..., min_length=1)
+    GROQ_API_KEY: Optional[str] = os.getenv("GROQ_API_KEY", "")
+    GROQ_MODEL: str = os.getenv("GROQ_MODEL") or "openai/gpt-oss-20b"
 
     # LogSage RCA Pipeline Settings
     RCA_CONTEXT_BEFORE: int = Field(default=4, ge=1, le=20)

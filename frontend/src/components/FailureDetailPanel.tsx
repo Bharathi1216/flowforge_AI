@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { 
   Copy, Check, Terminal, AlertOctagon, MessageSquarePlus, 
-  Sparkles, RefreshCw, CheckCircle2, Zap, AlertCircle,
-  History, GitBranch, Eye, EyeOff, FileText, Fingerprint
+  Sparkles, RefreshCw, CheckCircle2, AlertCircle,
+  History, GitBranch, Eye, EyeOff, FileText
 } from 'lucide-react';
-import { WorkflowRun, FailureAnalysis } from '../types';
+import { WorkflowRun, FailureAnalysis, ProviderAnalysis } from '../types';
 import { useToast } from '../contexts/ToastContext';
 import { useAIAssistant } from '../contexts/AIAssistantContext';
 import { logService } from '../services/logService';
@@ -86,7 +86,7 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
     setAnalysisLoading(true);
     setAnalysisError(null);
     try {
-      const data = await aiService.analyzeFailure(run.id, run, repoId);
+      const data = await aiService.reanalyzeFailure(run.id, repoId);
       if (data) {
         setAnalysisData(data);
         success('FlowForge AI diagnostic scan complete.', 'Analysis Ready');
@@ -109,6 +109,42 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
 
   const effectiveFix = analysisData?.suggestedFix || fallbackSuggestedFix;
   const effectiveRootCause = analysisData?.rootCause || run.diagnosticInfo?.rootCause || errorMessage;
+  const providerResults = analysisData?.providers;
+  const groqResult = providerResults?.groq;
+
+  const renderProvider = (provider: ProviderAnalysis | undefined, label: string) => {
+    if (!provider) {
+      return <p className="text-xs text-slate-700 dark:text-slate-400">No saved result is available for {label}.</p>;
+    }
+    if (provider.status === 'unavailable') {
+      return <p className="text-xs text-amber-700 dark:text-amber-300">Not configured. Add the provider API key on the backend to compare this model.</p>;
+    }
+    if (provider.status === 'failed') {
+      return (
+        <div className="space-y-2">
+          <p className="text-xs text-rose-700 dark:text-rose-300">This provider failed during analysis. The saved result is retained for deterministic reloads.</p>
+          {provider.error && (
+            <p className="rounded-lg border border-rose-200 dark:border-rose-500/20 bg-rose-50 dark:bg-rose-950/30 p-2 text-[10px] text-rose-800 dark:text-rose-200 font-mono break-words">
+              {provider.error}
+            </p>
+          )}
+        </div>
+      );
+    }
+    return (
+      <div className="space-y-3">
+        <p className="text-xs text-slate-700 dark:text-slate-200 leading-relaxed">{provider.summary}</p>
+        <div>
+          <div className="text-[10px] font-bold uppercase tracking-wider text-rose-700 dark:text-rose-400 mb-1">Root Cause</div>
+          <p className="text-xs text-rose-700 dark:text-rose-200/90 whitespace-pre-wrap font-mono">{provider.rootCause}</p>
+        </div>
+        <div>
+          <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-400 mb-1">Suggested Fix</div>
+          <p className="text-xs text-slate-600 dark:text-slate-300 whitespace-pre-wrap">{provider.suggestedFix}</p>
+        </div>
+      </div>
+    );
+  };
 
   const handleCopyLogs = () => {
     navigator.clipboard.writeText(realLogs || errorMessage);
@@ -186,7 +222,7 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
       </div>
 
       {/* 2. Dedicated Live FlowForge AI Diagnostic Card */}
-      <div className="rounded-2xl border border-purple-500/30 bg-gradient-to-b from-purple-950/20 via-slate-900/90 to-slate-950 p-6 shadow-xl relative overflow-hidden backdrop-blur-sm">
+      <div className="rounded-2xl border border-purple-200 dark:border-purple-500/30 bg-gradient-to-b from-purple-50 via-white to-slate-50 dark:from-purple-950/20 dark:via-slate-900/90 dark:to-slate-950 p-6 shadow-xl relative overflow-hidden backdrop-blur-sm">
         {/* Ambient Top Glow */}
         <div className="absolute top-0 right-0 w-80 h-80 bg-purple-600/10 rounded-full blur-3xl pointer-events-none" />
 
@@ -194,17 +230,17 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
         <div className="flex flex-wrap items-center justify-between gap-3 relative z-10">
           <div className="flex items-center gap-3">
             <div className="h-10 w-10 rounded-xl bg-gradient-to-tr from-purple-600 to-indigo-600 p-0.5 shadow-md shadow-purple-500/30">
-              <div className="h-full w-full bg-slate-950 rounded-[10px] flex items-center justify-center">
-                <Sparkles className="h-5 w-5 text-purple-400" />
+              <div className="h-full w-full bg-white dark:bg-slate-950 rounded-[10px] flex items-center justify-center">
+                <Sparkles className="h-5 w-5 text-purple-600 dark:text-purple-400" />
               </div>
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h3 className="text-sm font-bold text-white font-heading">
+                <h3 className="text-sm font-bold text-slate-900 dark:text-white font-heading">
                   FlowForge AI Diagnostic Engine
                 </h3>
               </div>
-              <p className="text-[11px] text-slate-400 font-mono mt-0.5">
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 font-mono mt-0.5">
                 Autonomous root-cause detection & remediation synthesis
               </p>
             </div>
@@ -212,21 +248,11 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
 
           {/* Diagnostic controls */}
           <div className="flex items-center gap-2">
-            {analysisData?.confidence !== undefined && (
-              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-purple-500/20 border border-purple-500/30 text-purple-300 font-mono text-xs font-bold">
-                <Zap className="h-3.5 w-3.5 text-amber-400" />
-                <span>
-                  {analysisData.confidence <= 1
-                    ? Math.round(analysisData.confidence * 100)
-                    : Math.round(analysisData.confidence)}% Analytical Confidence
-                </span>
-              </div>
-            )}
             <button
               onClick={handleTriggerAnalysis}
               disabled={analysisLoading}
-              className="p-2 rounded-xl border border-slate-800 bg-slate-900/80 hover:bg-slate-800 text-slate-400 hover:text-white transition-all disabled:opacity-50"
-              title="Re-run Diagnostic Scan"
+              className="p-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/80 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all disabled:opacity-50"
+              title="Re-analyze with current Gemini and Groq providers"
             >
               <RefreshCw className={`h-4 w-4 ${analysisLoading ? 'animate-spin text-purple-400' : ''}`} />
             </button>
@@ -237,53 +263,56 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
         {analysisLoading ? (
           <div className="py-10 flex flex-col items-center justify-center space-y-3">
             <RefreshCw className="h-8 w-8 text-purple-400 animate-spin" />
-            <p className="text-xs text-purple-300 font-mono animate-pulse">
+            <p className="text-xs text-purple-800 dark:text-purple-300 font-mono animate-pulse">
               FlowForge Intelligence Core is analyzing build logs and workspace AST...
             </p>
           </div>
         ) : (
           <div className="mt-4 space-y-3.5 relative z-10">
-            {/* Failure Fingerprint Signature */}
-            {analysisData?.failureFingerprint && (
-              <div className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-slate-950/70 border border-purple-500/25 text-[11px] font-mono">
-                <Fingerprint className="h-3.5 w-3.5 text-purple-400 flex-shrink-0" />
-                <span className="text-slate-400 font-semibold">Normalized Signature:</span>
-                <span className="text-purple-300 truncate">{analysisData.failureFingerprint}</span>
+            {providerResults && (
+              <div className="rounded-xl border border-cyan-200 dark:border-cyan-500/25 bg-cyan-50/60 dark:bg-slate-950/70 p-3.5">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="text-[11px] font-bold text-cyan-800 dark:text-cyan-300 uppercase font-mono tracking-wider">
+                    Model Comparison
+                  </div>
+                  <span className="text-[10px] text-slate-700 dark:text-slate-400 font-mono">Saved per workflow run</span>
+                </div>
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                  {(['gemini', 'groq'] as const).map((provider) => (
+                    <div key={provider} className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-black/30 p-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-bold text-slate-900 dark:text-white">{provider === 'gemini' ? 'Gemini' : 'Groq'}</span>
+                        <span className="text-[10px] rounded-full border border-slate-300 dark:border-slate-700 px-2 py-0.5 text-slate-700 dark:text-slate-400">
+                          {providerResults[provider]?.status || 'missing'}
+                        </span>
+                      </div>
+                      {renderProvider(provider === 'groq' ? groqResult : providerResults[provider], provider === 'gemini' ? 'Gemini' : 'Groq')}
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
-
-            {/* Executive Summary */}
-            <div className="rounded-xl bg-slate-950/70 border border-slate-800/80 p-3.5">
-              <div className="text-[11px] font-bold text-slate-400 uppercase font-mono tracking-wider mb-1 flex items-center gap-1.5">
-                <Zap className="h-3.5 w-3.5 text-amber-400" />
-                <span>Executive Summary</span>
-              </div>
-              <p className="text-xs text-slate-200 leading-relaxed">
-                {analysisData?.summary || `Workflow failure detected in '${run.name}' (Run #${run.runNumber}) on branch '${run.branch}'.`}
-              </p>
-            </div>
-
             {/* Identified Root Cause */}
-            <div className="rounded-xl bg-rose-950/20 border border-rose-500/30 p-3.5">
-              <div className="text-[11px] font-bold text-rose-400 uppercase font-mono tracking-wider mb-1 flex items-center gap-1.5">
+            <div className="rounded-xl bg-rose-50 border border-rose-200 dark:bg-rose-950/20 dark:border-rose-500/30 p-3.5">
+              <div className="text-[11px] font-bold text-rose-700 dark:text-rose-400 uppercase font-mono tracking-wider mb-1 flex items-center gap-1.5">
                 <AlertOctagon className="h-3.5 w-3.5 text-rose-400" />
                 <span>Identified Root Cause (LogSage Analysis)</span>
               </div>
-              <p className="text-xs text-rose-200/90 leading-relaxed font-mono whitespace-pre-wrap">
+              <p className="text-xs text-rose-700 dark:text-rose-200/90 leading-relaxed font-mono whitespace-pre-wrap">
                 {effectiveRootCause}
               </p>
             </div>
 
             {/* Factual Log Evidence */}
             {analysisData?.evidence && analysisData.evidence.length > 0 && (
-              <div className="rounded-xl bg-slate-950/70 border border-slate-800/80 p-3.5">
-                <div className="text-[11px] font-bold text-amber-400 uppercase font-mono tracking-wider mb-2 flex items-center gap-1.5">
+              <div className="rounded-xl bg-amber-50/70 border border-amber-200 dark:bg-slate-950/70 dark:border-slate-800/80 p-3.5">
+                <div className="text-[11px] font-bold text-amber-700 dark:text-amber-400 uppercase font-mono tracking-wider mb-2 flex items-center gap-1.5">
                   <AlertCircle className="h-3.5 w-3.5" />
                   <span>Observed Log Evidence</span>
                 </div>
                 <ul className="space-y-1.5">
                   {analysisData.evidence.map((ev, idx) => (
-                    <li key={idx} className="text-xs text-slate-300 font-mono flex items-start gap-2">
+                    <li key={idx} className="text-xs text-slate-700 dark:text-slate-300 font-mono flex items-start gap-2">
                       <span className="text-amber-400 select-none">•</span>
                       <span>{ev}</span>
                     </li>
@@ -294,13 +323,13 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
 
             {/* Critical Preprocessed Log Blocks */}
             {analysisData?.importantLogBlocks && analysisData.importantLogBlocks.length > 0 && (
-              <div className="rounded-xl bg-slate-950/70 border border-purple-500/25 p-3.5 space-y-2.5">
+              <div className="rounded-xl bg-purple-50/60 border border-purple-200 dark:bg-slate-950/70 dark:border-purple-500/25 p-3.5 space-y-2.5">
                 <div className="flex items-center justify-between">
-                  <div className="text-[11px] font-bold text-purple-300 uppercase font-mono tracking-wider flex items-center gap-1.5">
+                  <div className="text-[11px] font-bold text-purple-700 dark:text-purple-300 uppercase font-mono tracking-wider flex items-center gap-1.5">
                     <Terminal className="h-3.5 w-3.5 text-purple-400" />
-                    <span>Critical Log Blocks (Context Expanded m=4, n=6)</span>
+                    <span>Relevant Log Blocks</span>
                   </div>
-                  <span className="text-[10px] text-slate-400 font-mono">
+                  <span className="text-[10px] text-slate-700 dark:text-slate-400 font-mono">
                     {analysisData.importantLogBlocks.length} block{analysisData.importantLogBlocks.length > 1 ? 's' : ''} isolated
                   </span>
                 </div>
@@ -308,23 +337,21 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
                   {analysisData.importantLogBlocks.map((block, bIdx) => {
                     const startL = block.startLine ?? block.start_line ?? 1;
                     const endL = block.endLine ?? block.end_line ?? 1;
-                    const score = block.importanceScore ?? block.importance_score ?? 0;
                     return (
-                      <div key={bIdx} className="rounded-lg border border-slate-800 bg-black/60 overflow-hidden text-xs font-mono">
-                        <div className="flex items-center justify-between px-3 py-1.5 bg-slate-900/80 border-b border-slate-800 text-[10px] text-slate-400">
-                          <span className="font-bold text-purple-300">
+                      <div key={bIdx} className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-black/60 overflow-hidden text-xs font-mono">
+                        <div className="flex items-center justify-between px-3 py-1.5 bg-slate-100 dark:bg-slate-900/80 border-b border-slate-200 dark:border-slate-800 text-[10px] text-slate-700 dark:text-slate-400">
+                          <span className="font-bold text-purple-700 dark:text-purple-300">
                             Block #{bIdx + 1}: Lines {startL}–{endL}
                           </span>
                           <div className="flex items-center gap-1.5">
                             {block.reasons?.slice(0, 2).map((r, rIdx) => (
-                              <span key={rIdx} className="px-1.5 py-0.5 rounded bg-purple-950/60 border border-purple-500/20 text-purple-300 text-[9px]">
+                              <span key={rIdx} className="px-1.5 py-0.5 rounded bg-purple-100 dark:bg-purple-950/60 border border-purple-200 dark:border-purple-500/20 text-purple-700 dark:text-purple-300 text-[9px]">
                                 {r}
                               </span>
                             ))}
-                            <span className="text-slate-500">Score: {score}</span>
                           </div>
                         </div>
-                        <pre className="p-3 overflow-x-auto text-[11px] text-slate-200 leading-relaxed font-mono whitespace-pre select-text">
+                        <pre className="p-3 overflow-x-auto text-[11px] text-slate-700 dark:text-slate-200 leading-relaxed font-mono whitespace-pre select-text">
                           {block.text || block.lines?.map(l => `${(l.lineNumber ?? l.line_number ?? 0).toString().padStart(5, ' ')} | ${l.text}`).join('\n')}
                         </pre>
                       </div>
@@ -336,23 +363,23 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
 
             {/* Similar Historical Failure from FlowForge Semantic Memory */}
             {analysisData?.similarPreviousRunNumber && (
-              <div className="rounded-xl bg-indigo-950/25 border border-indigo-500/30 p-3.5 flex flex-wrap items-center justify-between gap-3 shadow-inner">
+              <div className="rounded-xl bg-indigo-50 border border-indigo-200 dark:bg-indigo-950/25 dark:border-indigo-500/30 p-3.5 flex flex-wrap items-center justify-between gap-3 shadow-inner">
                 <div className="flex items-center gap-3">
                   <div className="h-9 w-9 rounded-xl bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center">
                     <History className="h-4 w-4 text-indigo-400" />
                   </div>
                   <div>
                     <div className="flex items-center gap-2">
-                      <span className="text-xs font-bold text-white font-mono">
+                      <span className="text-xs font-bold text-slate-900 dark:text-white font-mono">
                         Pattern Match: Run #{analysisData.similarPreviousRunNumber}
                       </span>
                       {analysisData.similarMatchPercent && (
-                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-indigo-500/20 border border-indigo-500/30 text-indigo-300 font-mono font-bold">
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-indigo-100 dark:bg-indigo-500/20 border border-indigo-200 dark:border-indigo-500/30 text-indigo-700 dark:text-indigo-300 font-mono font-bold">
                           {analysisData.similarMatchPercent}% Semantic Similarity
                         </span>
                       )}
                     </div>
-                    <p className="text-[11px] text-indigo-200/70 mt-0.5 font-mono">
+                    <p className="text-[11px] text-indigo-700/80 dark:text-indigo-200/70 mt-0.5 font-mono">
                       Identified via FlowForge Semantic Memory Engine • Historical failure pattern verified
                     </p>
                   </div>
@@ -361,34 +388,34 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
             )}
 
             {/* Recommended Remediation Patch */}
-            <div className="rounded-xl bg-slate-950 border border-purple-500/25 p-4 shadow-inner">
+            <div className="rounded-xl bg-white border border-purple-200 dark:bg-slate-950 dark:border-purple-500/25 p-4 shadow-inner">
               <div className="flex items-center justify-between mb-2">
-                <div className="text-[11px] font-bold text-purple-300 uppercase font-mono tracking-wider flex items-center gap-1.5">
+                <div className="text-[11px] font-bold text-purple-700 dark:text-purple-300 uppercase font-mono tracking-wider flex items-center gap-1.5">
                   <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
                   <span>Recommended Remediation Patch</span>
                 </div>
                 <button
                   onClick={handleCopyFix}
-                  className="flex items-center gap-1 text-[11px] font-bold text-purple-300 hover:text-white px-3 py-1 rounded-lg bg-purple-900/30 hover:bg-purple-900/50 border border-purple-500/30 transition-all shadow-sm"
+                  className="flex items-center gap-1 text-[11px] font-bold text-purple-700 dark:text-purple-300 hover:text-purple-900 dark:hover:text-white px-3 py-1 rounded-lg bg-purple-50 dark:bg-purple-900/30 hover:bg-purple-100 dark:hover:bg-purple-900/50 border border-purple-200 dark:border-purple-500/30 transition-all shadow-sm"
                 >
                   {copiedFix ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
                   <span>{copiedFix ? 'Copied' : 'Copy Fix'}</span>
                 </button>
               </div>
-              <pre className="text-xs font-mono text-purple-200 whitespace-pre-wrap leading-relaxed overflow-x-auto bg-black/50 p-3.5 rounded-lg border border-slate-800 select-text">
+              <pre className="text-xs font-mono text-purple-800 dark:text-purple-200 whitespace-pre-wrap leading-relaxed overflow-x-auto bg-purple-50 dark:bg-black/50 p-3.5 rounded-lg border border-purple-100 dark:border-slate-800 select-text">
                 {effectiveFix}
               </pre>
             </div>
 
             {/* Card Action Footer */}
-            <div className="pt-2 flex flex-wrap items-center justify-between gap-3 border-t border-slate-800/80">
-              <div className="text-[11px] text-slate-400 font-mono">
-                Engine: <span className="text-purple-400 font-semibold">FlowForge Intelligence Core</span> • Grounded in Run History
+            <div className="pt-2 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 dark:border-slate-800/80">
+              <div className="text-[11px] text-slate-500 dark:text-slate-400 font-mono">
+                Engine: <span className="text-purple-700 dark:text-purple-400 font-semibold">FlowForge Intelligence Core</span> • Grounded in Run History
               </div>
               <div className="flex items-center gap-2">
                 <button
                   onClick={handleAskAI}
-                  className="flex items-center gap-1.5 rounded-xl border border-purple-500/30 bg-purple-500/10 hover:bg-purple-500/20 text-purple-300 px-3.5 py-2 text-xs font-bold transition-all"
+                  className="flex items-center gap-1.5 rounded-xl border border-purple-200 dark:border-purple-500/30 bg-purple-50 dark:bg-purple-500/10 hover:bg-purple-100 dark:hover:bg-purple-500/20 text-purple-700 dark:text-purple-300 px-3.5 py-2 text-xs font-bold transition-all"
                 >
                   <Sparkles className="h-3.5 w-3.5 text-purple-400" />
                   <span>Ask Assistant</span>
@@ -406,14 +433,14 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
         )}
 
         {analysisError && (
-          <div className="mt-3 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between text-xs text-amber-300 font-mono">
+          <div className="mt-3 p-3 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 flex items-center justify-between text-xs text-amber-700 dark:text-amber-300 font-mono">
             <span className="flex items-center gap-2">
               <AlertCircle className="h-4 w-4 text-amber-400" />
               {analysisError}
             </span>
             <button
               onClick={handleTriggerAnalysis}
-              className="underline hover:text-white font-bold"
+              className="underline hover:text-amber-900 dark:hover:text-white font-bold"
             >
               Retry Diagnostic
             </button>
@@ -482,13 +509,13 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
         </div>
 
         {showFullRawLogs ? (
-          <div className="relative rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-900 dark:bg-slate-950 overflow-hidden shadow-inner">
-            <div className="flex items-center justify-between px-4 py-2 bg-slate-950 dark:bg-black/50 border-b border-slate-800 text-[10px] text-slate-400 font-mono">
+          <div className="relative rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 overflow-hidden shadow-inner">
+            <div className="flex items-center justify-between px-4 py-2 bg-slate-100 dark:bg-black/50 border-b border-slate-200 dark:border-slate-800 text-[10px] text-slate-500 dark:text-slate-400 font-mono">
               <span>Commit {run.commitSha || 'HEAD'} • {run.name} • Run #{run.runNumber} (Complete Preserved Raw Log)</span>
               <span className="text-rose-400">Exit Code: 1</span>
             </div>
 
-            <pre className="font-mono text-xs text-rose-300 p-4 overflow-x-auto whitespace-pre-wrap leading-relaxed max-h-[500px] scrollbar-terminal select-text">
+            <pre className="font-mono text-xs text-rose-700 dark:text-rose-300 p-4 overflow-x-auto whitespace-pre-wrap leading-relaxed max-h-[500px] scrollbar-terminal select-text">
               {analysisData?.rawLogs || logsError || realLogs || errorMessage}
             </pre>
           </div>
@@ -500,7 +527,7 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
             </div>
             <button
               onClick={() => setShowFullRawLogs(true)}
-              className="px-3.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 dark:bg-purple-950/40 dark:hover:bg-purple-900/60 border border-purple-500/30 text-purple-300 text-xs font-medium transition-all flex items-center gap-1.5 flex-shrink-0"
+              className="px-3.5 py-1.5 rounded-lg bg-purple-50 hover:bg-purple-100 dark:bg-purple-950/40 dark:hover:bg-purple-900/60 border border-purple-200 dark:border-purple-500/30 text-purple-700 dark:text-purple-300 text-xs font-medium transition-all flex items-center gap-1.5 flex-shrink-0"
             >
               <Eye className="h-3.5 w-3.5" />
               <span>View Full Raw Log</span>
