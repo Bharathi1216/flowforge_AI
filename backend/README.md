@@ -1,59 +1,51 @@
-# Backend Service (FastAPI)
+# Backend
 
-This directory is designated for the FlowForge AI FastAPI backend.
+FastAPI with synchronous SQLAlchemy/psycopg2, GitHub REST integration, optional Gemini/Groq diagnostics, and pgvector retrieval.
 
-## Local Setup
+## Setup and startup
 
-Use Python 3.11 or 3.12 for local development. The free-threaded Python 3.13t build is not compatible with the current `cryptography` stack used here.
+Use Python 3.11 or 3.12. Create `.venv`, install `requirements-dev.txt`, copy `.env.example` to `.env`, and configure PostgreSQL and GitHub OAuth as described in the root README. The browser frontend and OAuth callback should consistently use `localhost`, not a mixture of `localhost` and `127.0.0.1`.
 
-Copy `.env.example` to `.env` and replace the GitHub OAuth App placeholders before using GitHub login:
-
-- `GITHUB_CLIENT_ID`: the OAuth App client ID from GitHub
-- `GITHUB_CLIENT_SECRET`: the OAuth App client secret from GitHub
-
-The callback URL configured in GitHub must be:
-`http://localhost:8001/api/auth/github/callback`
-
-Without these values, the login endpoint returns `503 GitHub OAuth credentials are not configured` instead of redirecting to an invalid GitHub URL.
-
-## Expected Responsibilities
-- User authentication & session management via GitHub OAuth.
-- CRUD operations for projects, repositories, workspaces, and team memberships.
-- Execution webhook integrations with GitHub.
-- Proxy and control flow for running Celery tasks.
-- API endpoints: `/api/repositories`, `/api/workflows`, etc.
-
-`DATABASE_URL` must point to the Supabase PostgreSQL database. The backend does not fall back to local SQLite, because a fallback can display stale or cross-account repository data. If Supabase is unavailable or credentials are invalid, startup fails with an explicit database error.
-
-## GitHub Actions Webhooks
-
-GitHub sends workflow logs through the `workflow_run` event after an Actions workflow runs. Configure a public HTTPS callback and the same secret in both `backend/.env` and GitHub:
-
-```env
-WEBHOOK_CALLBACK_URL=https://your-public-host.example.com/api/webhooks/github
-GITHUB_WEBHOOK_SECRET=your-random-secret
+```powershell
+.\.venv\Scripts\python -m app.db.migrate
+.\.venv\Scripts\python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8001
 ```
 
-The endpoint is `/api/webhooks/github`. It validates the signature, stores the workflow run in PostgreSQL, and the workspace fetches the real logs from GitHub when the run is opened.
+Startup validates connectivity and schema version. It does not create tables, alter columns, build vector indexes, download models, or fall back to SQLite. Run migrations explicitly using a PostgreSQL role that can manage the required schema and pgvector extension. See `../database/README.md` before upgrading an existing database.
 
-On an explicit repository refresh, FlowForge attempts to create the hook for every accessible repository. A missing callback URL or secret skips registration so repositories still load. Repositories where the user is only a collaborator may not allow webhook creation.
+OAuth credentials are necessary for sign-in. When missing, login redirects to the frontend with `oauth_error=unavailable`. `SECRET_KEY` and `DATABASE_URL` are required; AI keys are optional. Existing session tokens without expiration are rejected after this upgrade; sign in again.
 
-## Evidence Graph-Based Failure Analysis
+## Concurrency and caching
 
-Failed-run analysis discovers diagnostic events across the complete available log, while retaining the existing configurable context windows (`RCA_CONTEXT_BEFORE=4` and `RCA_CONTEXT_AFTER=6`). The deterministic Evidence Graph records event line references, classifications, identifiers, supported relationships, and ranked root-cause candidates. Temporal `PRECEDES` edges do not imply causation; candidate scores are rankings rather than causal probabilities.
+`isolated_db` exposes synchronous FastAPI endpoints whose sessions are created and closed inside their worker threads. AI provider orchestration runs inside the same worker's event loop; ORM objects stay in their owning thread. HTTP-only authentication returns an immutable principal. GitHub requests share a thread-safe HTTP connection pool; repository synchronization allows five concurrent HTTP requests and deduplicates overlapping refreshes per user.
 
-The complete graph is persisted in the existing `failure_logs.structured_failure` JSON text alongside the structured failure record. The analysis response exposes a compact `evidenceGraph` summary, and graph-selected source lines are expanded and passed through the existing log-pruning path. If graph construction fails, analysis logs the error and continues with the existing RCA path.
+The application uses process-local locks for overlapping log downloads, discussion synchronization, and analyses. Run one Uvicorn worker for this MVP. Atomic PostgreSQL workflow upserts remain safe across processes; distributed analysis scheduling is future production work. Do not share a request session with another thread or task.
 
-Successful workflow logs fetched by FlowForge are indexed into the `workflow_successes` pgvector collection. Similarity retrieval considers both successful workflow context and historical failed runs with their stored RCA/fix, and supplies matches to the current RCA prompt as references rather than verified answers. The embedding model and vector dimensions remain unchanged.
+Repository summaries use bounded aggregate queries over the latest ten runs. Run status and conclusion remain separate. Source update timestamps and attempt numbers prevent stale webhook deliveries from overwriting newer metadata. Complete logs are cached by attempt and GitHub job ID. The combined log limit is `MAX_LOG_BYTES` (20 MB by default); incomplete logs return a retryable 409 instead of an empty diagnosis.
 
-The candidate-ranking weights can be tuned with `RCA_EVIDENCE_WEIGHT_TEMPORAL`, `RCA_EVIDENCE_WEIGHT_RELEVANCE`, `RCA_EVIDENCE_WEIGHT_RELATIONSHIPS`, `RCA_EVIDENCE_WEIGHT_STRENGTH`, and `RCA_EVIDENCE_WEIGHT_BASELINE` (each accepts `0.0`–`1.0`; defaults are equal weights). Missing baseline data is omitted and the remaining available weights are normalized. These initial weights are configuration defaults, not experimentally validated causal probabilities.
+## Diagnostics
 
-## Registration Test
+Automatic analysis waits for logs. Cache identity includes log content, run attempt, prompt version, provider models/enabled state, and RCA settings. Failed or unavailable secondary-provider outcomes are cached too. `?reanalyze=true` explicitly refreshes results and preserves saved results until a replacement succeeds.
 
-The protected registration endpoint is:
+`GET /api/repositories/{repo_id}/workflows/{run_id}/analysis` reads saved analysis without invoking providers. `POST` performs analysis. Both use the canonical GitHub IDs. The configured Gemini model and optional Groq model run concurrently, each with a bounded deadline. No unconfigured alternate models are silently invoked. Generation failure yields a labeled deterministic fallback; model output must satisfy diagnostic types and valid evidence line ranges.
 
-```text
-POST /api/repositories/{github_repository_id}/webhook
+The Evidence Graph preserves source line references, classifications, relationships, and ranked candidates. Temporal order and ranking scores are not proof or probabilities of causation. Existing `RCA_CONTEXT_*`, `RCA_MAX_TOKENS`, and `RCA_EVIDENCE_WEIGHT_*` settings remain available. Oversized log blocks are pruned without renumbering retained lines.
+
+Embedding initialization is lazy. Model download/extraction uses a cross-process file lock, verified checksum, staging directory, and atomic file replacement. Successful-run context, failures, and diagnosed fixes use repository-scoped document identities. Vector retrieval failure does not prevent diagnostics or repository-grounded chat.
+
+## Discussions and webhooks
+
+Discussions and comments use GitHub issue/comment IDs. Source payloads preserve authorship and timestamps for explicit `cached=true` reads. Normal reads propagate upstream failures instead of silently substituting unrelated records. Editing a discussion retains its hidden workflow-run marker. Creating a linked discussion is deduplicated per run within the application process.
+
+Set `WEBHOOK_CALLBACK_URL` to a public HTTPS address ending in `/api/webhooks/github`, and configure `GITHUB_WEBHOOK_SECRET` in GitHub as well as the backend. Use the protected registration endpoint to create the hook explicitly. Workflow events contain run metadata, not job log archives.
+
+## Tests
+
+```powershell
+.\.venv\Scripts\python -m ruff check app tests
+.\.venv\Scripts\python -m unittest discover -s tests -v
+.\.venv\Scripts\python -m pip check
+.\.venv\Scripts\python -m pip_audit
 ```
 
-Normal use does not require calling this endpoint manually because repository refresh calls the same registration logic automatically. A successful registration returns `registered` with the GitHub webhook ID. A repository without admin permission is left unregistered and continues to use refresh-based synchronization.
+Unit/API regression tests use isolated SQLite sessions and mocked GitHub/model clients. PostgreSQL/pgvector migration and concurrency tests require `TEST_DATABASE_URL` pointing to a disposable local database whose name includes `test` or `audit`; see the database README. No tests require live OAuth credentials or paid model calls.

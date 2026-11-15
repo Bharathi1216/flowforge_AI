@@ -1,185 +1,180 @@
-import React, { useEffect, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import axios from 'axios';
-import { useParams, useNavigate } from 'react-router-dom';
-import { 
-  AlertOctagon, MessageSquare, Play, Users, 
-  RotateCw, RefreshCw, ArrowLeft,
-  CheckCircle2, Sparkles
+import {
+  AlertOctagon,
+  ArrowLeft,
+  CheckCircle2,
+  MessageSquare,
+  Play,
+  RefreshCw,
+  RotateCw,
+  Sparkles,
+  Users,
 } from 'lucide-react';
-import { repositoryService } from '../services/repositoryService';
-import { workflowService } from '../services/workflowService';
-import { discussionService } from '../services/discussionService';
-import { teamService } from '../services/teamService';
-import { Repository, WorkflowRun, Discussion, Collaborator, Comment } from '../types';
-import { StatusBadge } from '../components/StatusBadge';
-import { WorkflowRunRow } from '../components/WorkflowRunRow';
-import { FailureDetailPanel } from '../components/FailureDetailPanel';
-import { ThreadView } from '../components/ThreadView';
+import React, { useState } from 'react';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { ContributorCard } from '../components/ContributorCard';
-import { useToast } from '../contexts/ToastContext';
-import { useAIAssistant } from '../contexts/AIAssistantContext';
+import { FailureDetailPanel } from '../components/FailureDetailPanel';
+import { StatusBadge } from '../components/StatusBadge';
+import { ThreadView } from '../components/ThreadView';
+import { WorkflowRunRow } from '../components/WorkflowRunRow';
+import { useAIAssistant } from '../contexts/assistantState';
+import { useAuth } from '../contexts/authState';
+import { useToast } from '../contexts/toastState';
+import { discussionService } from '../services/discussionService';
+import { repositoryService } from '../services/repositoryService';
+import { teamService } from '../services/teamService';
+import { workflowService } from '../services/workflowService';
+import { Discussion, WorkflowRun } from '../types';
 
 export const RepositoryWorkspace: React.FC = () => {
-  const { repoId, tab } = useParams<{ repoId: string; tab?: string }>();
+  const { repoId } = useParams();
+  const location = useLocation();
+  return <RepositoryWorkspaceContent key={`${repoId}:${location.state?.draft?.id || ''}`} />;
+};
+
+const RepositoryWorkspaceContent: React.FC = () => {
+  const { repoId = '', tab, workflowId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  const incomingDraft = location.state?.draft;
+  const [draftTitle, setDraftTitle] = useState(
+    typeof incomingDraft?.title === 'string' ? incomingDraft.title : '',
+  );
+  const [draftContent, setDraftContent] = useState(
+    typeof incomingDraft?.content === 'string' ? incomingDraft.content : '',
+  );
+  const [publishingDraft, setPublishingDraft] = useState(false);
+  const { user } = useAuth();
   const { success, error: showError } = useToast();
   const { openAssistant } = useAIAssistant();
-
-
-  const [repo, setRepo] = useState<Repository | null>(null);
-  const [loading, setLoading] = useState(true);
-  
-  // 4 Core Workspace Tabs
-  const [activeTab, setActiveTab] = useState<'failure-analysis' | 'threads' | 'workflows' | 'team'>('failure-analysis');
-
-  // Sub-data states
-  const [workflowRuns, setWorkflowRuns] = useState<WorkflowRun[]>([]);
-  const [workflowFilter, setWorkflowFilter] = useState<'all' | 'running' | 'passed' | 'failed'>('all');
-  const [selectedFailureRun, setSelectedFailureRun] = useState<WorkflowRun | null>(null);
-  const [discussions, setDiscussions] = useState<Discussion[]>([]);
-  const [selectedDiscussion, setSelectedDiscussion] = useState<Discussion | null>(null);
-  const [comments, setComments] = useState<Comment[]>([]);
-  const [collaborators, setCollaborators] = useState<Collaborator[]>([]);
-  
-  // Top header retry latest run state
+  const queryClient = useQueryClient();
+  type Tab = 'failure-analysis' | 'threads' | 'workflows' | 'team';
+  const activeTab: Tab =
+    tab && ['threads', 'workflows', 'team'].includes(tab) ? (tab as Tab) : 'failure-analysis';
+  const [workflowFilter, setWorkflowFilter] = useState<'all' | 'running' | 'passed' | 'failed'>(
+    'all',
+  );
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(workflowId || null);
+  const [selectedDiscussionId, setSelectedDiscussionId] = useState<string | null>(null);
   const [isRetryingLatest, setIsRetryingLatest] = useState(false);
-
-  // Sync tab from URL
-  useEffect(() => {
-    if (tab) {
-      if (['failure-analysis', 'threads', 'workflows', 'team'].includes(tab)) {
-        setActiveTab(tab as any);
-      }
-    }
-  }, [tab]);
-
-  // Fetch repository data
-  useEffect(() => {
-    const fetchData = async () => {
-      if (!repoId) return;
-      setLoading(true);
-      setRepo(null);
-      setWorkflowRuns([]);
-      setSelectedFailureRun(null);
-      setDiscussions([]);
-      setSelectedDiscussion(null);
-      setComments([]);
-      setCollaborators([]);
-      try {
-        const repoData = await repositoryService.getRepository(repoId);
-        setRepo(repoData);
-
-        if (repoData) {
-          const [runs, discList, members] = await Promise.all([
-            workflowService.getWorkflowRuns(repoData.id).catch(() => []),
-            discussionService.getDiscussions(repoData.name).catch(() => []),
-            teamService.getMembers(repoData.id).catch(() => []),
-          ]);
-
-          setWorkflowRuns(runs);
-
-          // Only a failed run belongs in the failure-analysis panel. Selecting
-          // the latest successful run here made the panel show a false failure
-          // while the failing-run count was zero.
-          setSelectedFailureRun(runs.find((r) => r.status === 'failed') || null);
-
-          setDiscussions(discList);
-          if (discList.length > 0) {
-            const firstDiscussion = discList[0];
-            setSelectedDiscussion(firstDiscussion);
-            try {
-              const details = await discussionService.getDiscussion(repoData.id, firstDiscussion.id);
-              setComments(details.comments || []);
-            } catch {
-              setComments([]);
-            }
-          }
-
-          setCollaborators(members);
-        }
-      } catch (err) {
-        console.error(err);
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchData();
-  }, [repoId]);
-
-  const handleTabClick = (newTab: 'failure-analysis' | 'threads' | 'workflows' | 'team') => {
-    setActiveTab(newTab);
-    navigate(`/repositories/${repoId}/${newTab}`);
-  };
-
-  const handleSelectDiscussion = async (disc: Discussion, repositoryId?: string) => {
-    setSelectedDiscussion(disc);
-    try {
-      const targetRepositoryId = repositoryId || repo?.id;
-      if (!targetRepositoryId) return;
-      const details = await discussionService.getDiscussion(targetRepositoryId, disc.id);
-      setComments(details.comments);
-    } catch (error) {
-      const detail = axios.isAxiosError(error) ? error.response?.data?.detail : null;
-      showError(typeof detail === 'string' ? detail : 'Could not load this discussion.', 'Discussion unavailable');
-    }
-  };
-
-  const handleCreateDiscussion = async (title: string, content: string) => {
+  const repoQuery = useQuery({
+    ...repositoryService.repositoryOptions(user?.id || '', repoId),
+    enabled: !!user && !!repoId,
+  });
+  const repo = repoQuery.data || null;
+  const runsKey = ['workflow-runs', user?.id, repo?.id];
+  const discussionsKey = ['discussions', user?.id, repo?.id];
+  const runsQuery = useQuery({
+    queryKey: runsKey,
+    queryFn: () => workflowService.getWorkflowRuns(repo!.id, true),
+    enabled: !!repo,
+    refetchInterval: (query) =>
+      query.state.data?.some((run) => run.status === 'running') ? 5000 : false,
+  });
+  const discussionsQuery = useQuery({
+    queryKey: discussionsKey,
+    queryFn: () => discussionService.getDiscussions(repo!.id),
+    enabled: !!repo && (activeTab === 'threads' || activeTab === 'team'),
+  });
+  const teamQuery = useQuery({
+    queryKey: ['team', user?.id, repo?.id],
+    queryFn: () => teamService.getMembers(repo!.id),
+    enabled: !!repo && activeTab === 'team',
+  });
+  const workflowRuns = runsQuery.data || [];
+  const discussions = discussionsQuery.data || [];
+  const collaborators = teamQuery.data || [];
+  const selectedFailureRun =
+    workflowRuns.find((run) => run.id === selectedRunId && run.status === 'failed') ||
+    workflowRuns.find((run) => run.status === 'failed') ||
+    null;
+  const selectedDiscussion =
+    discussions.find((disc) => disc.id === selectedDiscussionId) || discussions[0] || null;
+  const detailsKey = ['discussion', user?.id, repo?.id, selectedDiscussion?.id];
+  const detailsQuery = useQuery({
+    queryKey: detailsKey,
+    queryFn: () => discussionService.getDiscussion(repo!.id, selectedDiscussion!.id),
+    enabled: !!repo && !!selectedDiscussion && activeTab === 'threads',
+  });
+  const comments = detailsQuery.data?.comments || [];
+  const loading = repoQuery.isPending || (!!repo && runsQuery.isPending);
+  const workspaceError =
+    repoQuery.error ||
+    runsQuery.error ||
+    discussionsQuery.error ||
+    teamQuery.error ||
+    detailsQuery.error;
+  const handleTabClick = (next: Tab) =>
+    navigate(`/repositories/${encodeURIComponent(repo?.id || repoId)}/${next}`);
+  const setSelectedFailureRun = (run: WorkflowRun | null) => setSelectedRunId(run?.id || null);
+  const handleSelectDiscussion = (disc: Discussion) => setSelectedDiscussionId(disc.id);
+  const handleCreateDiscussion = async (
+    title: string,
+    content: string,
+    runId: string | null | undefined = selectedFailureRun?.id,
+  ) => {
     if (!repo) return false;
-    const newDisc = await discussionService.createDiscussion(
+    const created = await discussionService.createDiscussion(
       repo.id,
-      selectedFailureRun?.id,
+      runId || undefined,
       title,
-      content
+      content,
     );
-    setDiscussions((current) => [newDisc, ...current.filter((discussion) => discussion.id !== newDisc.id)]);
-    setSelectedDiscussion(newDisc);
-    setComments([]);
+    queryClient.setQueryData<Discussion[]>(discussionsKey, (current) => [
+      created,
+      ...(current || []).filter((disc) => disc.id !== created.id),
+    ]);
+    setSelectedDiscussionId(created.id);
+    await queryClient.invalidateQueries({
+      queryKey: ['discussion', user?.id, repo.id, created.id],
+    });
     return true;
   };
-
-  const handleAddComment = async (discId: string, text: string) => {
+  const handleAddComment = async (discussionId: string, content: string) => {
     if (!repo) throw new Error('Repository is no longer selected.');
-    const newComment = await discussionService.addComment(repo.id, discId, text);
-    setComments((prev) => [...prev, newComment]);
+    await discussionService.addComment(repo.id, discussionId, content);
+    await queryClient.invalidateQueries({
+      queryKey: ['discussion', user?.id, repo.id, discussionId],
+    });
+    await queryClient.invalidateQueries({ queryKey: discussionsKey });
   };
-
-  const handleResolveDiscussion = async (discId: string, status: 'resolved' | 'open') => {
+  const handleResolveDiscussion = async (discussionId: string, status: 'resolved' | 'open') => {
     if (!repo) return;
-    const updated = await discussionService.resolveDiscussion(repo.id, discId, status);
-    setDiscussions((prev) =>
-      prev.map((d) => (d.id === discId ? { ...d, status: updated.status } : d))
-    );
-    if (selectedDiscussion && selectedDiscussion.id === discId) {
-      setSelectedDiscussion((prev) => (prev ? { ...prev, status: updated.status } : null));
-    }
+    await discussionService.resolveDiscussion(repo.id, discussionId, status);
+    await queryClient.invalidateQueries({ queryKey: discussionsKey });
   };
-
-  // Push Failure directly to Discussion Thread
-  const handlePushFailureToThread = async (title: string, logExcerpt: string, aiSolution: string) => {
-    if (!repo) return;
-    const threadBody = `${logExcerpt}\n\nSuggested Fix & Diagnostics:\n${aiSolution}`;
-
+  const handlePushFailureToThread = async (title: string, excerpt: string, fix: string) => {
     try {
-      const created = await handleCreateDiscussion(title, threadBody);
-      if (!created) return;
-      success('Failure logs and AI diagnosis were added to a GitHub issue.', 'Pushed to Thread');
-      handleTabClick('threads');
+      if (
+        await handleCreateDiscussion(title, `${excerpt}\n\nSuggested Fix & Diagnostics:\n${fix}`)
+      ) {
+        success('Failure logs and diagnosis were added to a GitHub issue.', 'Pushed to Thread');
+        handleTabClick('threads');
+      }
     } catch (error) {
       const detail = axios.isAxiosError(error) ? error.response?.data?.detail : null;
-      showError(typeof detail === 'string' ? detail : 'Could not create a discussion thread.', 'Push Failed');
+      showError(
+        typeof detail === 'string' ? detail : 'Could not create a discussion.',
+        'Push Failed',
+      );
     }
   };
-
   const handleRetryLatestRun = async () => {
-    if (!repo || !selectedFailureRun) return;
+    if (!repo || !selectedFailureRun || isRetryingLatest) return;
     setIsRetryingLatest(true);
     try {
       await workflowService.retryWorkflow(repo.id, selectedFailureRun.id);
-      success(`Queued retry for run #${selectedFailureRun.runNumber} in ${repo.name}`, 'Workflow Queued');
-    } catch (error) {
-      console.error(error);
-      showError('GitHub could not queue this workflow retry.', 'Retry Failed');
+      await queryClient.invalidateQueries({
+        queryKey: ['logs', user?.id, repo.id, selectedFailureRun.id],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ['analysis', user?.id, repo.id, selectedFailureRun.id],
+      });
+      await queryClient.invalidateQueries({ queryKey: runsKey });
+      success('Workflow retry requested on GitHub.', 'Workflow Queued');
+    } catch {
+      showError('GitHub could not queue this retry.', 'Retry Failed');
     } finally {
       setIsRetryingLatest(false);
     }
@@ -199,7 +194,8 @@ export const RepositoryWorkspace: React.FC = () => {
         <AlertOctagon className="h-10 w-10 text-rose-500 mx-auto" />
         <h3 className="text-base font-bold text-slate-900 dark:text-white">Repository Not Found</h3>
         <p className="text-xs text-slate-500">
-          The repository '{repoId}' could not be loaded. Please ensure it is connected and synchronized.
+          The repository '{repoId}' could not be loaded. Please ensure it is connected and
+          synchronized.
         </p>
         <button
           onClick={() => navigate('/dashboard')}
@@ -222,6 +218,11 @@ export const RepositoryWorkspace: React.FC = () => {
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto py-2">
+      {workspaceError && (
+        <p role="alert" className="rounded-xl bg-amber-50 p-4 text-sm text-amber-900">
+          Some workspace data could not be loaded. Refresh or reconnect GitHub and try again.
+        </p>
+      )}
       {/* 1. Header: Repo name + owner + status badge + AI Assistant trigger + "Retry latest run" button */}
       <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0E121D] p-5 shadow-sm flex flex-wrap items-center justify-between gap-4 transition-colors">
         <div className="flex items-center gap-4">
@@ -235,11 +236,14 @@ export const RepositoryWorkspace: React.FC = () => {
 
           <div>
             <div className="flex items-center gap-3">
-              <h1 className="text-2xl font-black text-slate-900 dark:text-white tracking-tight font-heading">{repo.name}</h1>
+              <h1 className="text-2xl font-black text-slate-900 dark:text-white tracking-tight font-heading">
+                {repo.name}
+              </h1>
               <StatusBadge status={repo.lastWorkflowStatus} />
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 font-mono">
-              Repository Owner: <span className="text-purple-600 dark:text-purple-400 font-bold">@{repo.owner}</span>
+              Repository Owner:{' '}
+              <span className="text-purple-600 dark:text-purple-400 font-bold">@{repo.owner}</span>
             </p>
           </div>
         </div>
@@ -248,7 +252,12 @@ export const RepositoryWorkspace: React.FC = () => {
         <div className="flex items-center gap-3">
           {/* Ask AI Assistant button */}
           <button
-            onClick={() => openAssistant(`I am looking at ${repo.name}. Can you summarize recent build status, failure points, and team recommendations?`, repo.name)}
+            onClick={() =>
+              openAssistant(
+                `I am looking at ${repo.name}. Can you summarize recent build status, failure points, and team recommendations?`,
+                repo.id,
+              )
+            }
             className="flex items-center gap-2 rounded-xl bg-purple-50 dark:bg-purple-950/40 hover:bg-purple-100 dark:hover:bg-purple-900/50 border border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-300 px-4 py-2.5 text-xs font-bold transition-all shadow-sm group"
           >
             <Sparkles className="h-4 w-4 text-purple-600 dark:text-purple-400 group-hover:rotate-12 transition-transform" />
@@ -272,10 +281,21 @@ export const RepositoryWorkspace: React.FC = () => {
       {/* 2. Top Navigation Tabs (4 Core Tabs) */}
       <div className="flex items-center border-b border-slate-200 dark:border-slate-800 space-x-1 overflow-x-auto scrollbar-terminal">
         {[
-          { id: 'failure-analysis', name: 'Failure Analysis & Logs', icon: AlertOctagon, count: failedRuns.length, highlight: true },
-          { id: 'threads', name: 'Discussion Threads', icon: MessageSquare, count: discussions.length },
+          {
+            id: 'failure-analysis',
+            name: 'Failure Analysis & Logs',
+            icon: AlertOctagon,
+            count: failedRuns.length,
+            highlight: true,
+          },
+          {
+            id: 'threads',
+            name: 'Discussion Threads',
+            icon: MessageSquare,
+            count: discussions.length,
+          },
           { id: 'workflows', name: 'All Workflows', icon: Play, count: workflowRuns.length },
-          { id: 'team', name: 'Team & Collaboration', icon: Users, count: collaborators.length }
+          { id: 'team', name: 'Team & Collaboration', icon: Users, count: collaborators.length },
         ].map((t) => {
           const Icon = t.icon;
           const isActive = activeTab === t.id;
@@ -289,7 +309,9 @@ export const RepositoryWorkspace: React.FC = () => {
                   : 'border-transparent text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
               }`}
             >
-              <Icon className={`h-4 w-4 ${t.highlight && failedRuns.length > 0 ? 'text-rose-500' : ''}`} />
+              <Icon
+                className={`h-4 w-4 ${t.highlight && failedRuns.length > 0 ? 'text-rose-500' : ''}`}
+              />
               <span>{t.name}</span>
               {t.count !== undefined && (
                 <span
@@ -297,8 +319,8 @@ export const RepositoryWorkspace: React.FC = () => {
                     t.id === 'failure-analysis' && t.count > 0
                       ? 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800'
                       : isActive
-                      ? 'bg-purple-100 dark:bg-purple-900/50 text-purple-800 dark:text-purple-200'
-                      : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
+                        ? 'bg-purple-100 dark:bg-purple-900/50 text-purple-800 dark:text-purple-200'
+                        : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
                   }`}
                 >
                   {t.count}
@@ -324,7 +346,9 @@ export const RepositoryWorkspace: React.FC = () => {
                       {failedRuns.length}
                     </span>
                   </h3>
-                  <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">Select run</span>
+                  <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">
+                    Select run
+                  </span>
                 </div>
 
                 <div className="space-y-2">
@@ -349,7 +373,9 @@ export const RepositoryWorkspace: React.FC = () => {
                         >
                           <div className="flex items-center justify-between gap-2">
                             <div className="flex items-center gap-1.5 min-w-0">
-                              {isLatest && <span className="h-2 w-2 rounded-full bg-red-500 animate-ping shrink-0" />}
+                              {isLatest && (
+                                <span className="h-2 w-2 rounded-full bg-red-500 animate-ping shrink-0" />
+                              )}
                               <span className="text-xs font-bold text-red-600 dark:text-red-400 truncate">
                                 {run.diagnosticInfo?.errorType || `${run.name} Failed`}
                               </span>
@@ -363,7 +389,10 @@ export const RepositoryWorkspace: React.FC = () => {
                             <span>branch: {run.branch}</span>
                             <span>{run.timestamp || 'Date unavailable'}</span>
                           </div>
-                          <div className="mt-1 truncate text-[10px] text-slate-500 dark:text-slate-400" title={run.commitMessage}>
+                          <div
+                            className="mt-1 truncate text-[10px] text-slate-500 dark:text-slate-400"
+                            title={run.commitMessage}
+                          >
                             commit: {run.commitSha || 'HEAD'} · {run.commitMessage}
                           </div>
                         </div>
@@ -378,6 +407,7 @@ export const RepositoryWorkspace: React.FC = () => {
             <div className="lg:col-span-8">
               {selectedFailureRun ? (
                 <FailureDetailPanel
+                  key={`${repo.id}:${selectedFailureRun.id}:${selectedFailureRun.runAttempt || 1}`}
                   run={selectedFailureRun}
                   repoId={repo.id}
                   onPushToThread={handlePushFailureToThread}
@@ -394,14 +424,62 @@ export const RepositoryWorkspace: React.FC = () => {
 
         {/* TAB 2: DISCUSSION THREADS */}
         {activeTab === 'threads' && (
-          <ThreadView
-            discussions={discussions}
-            selectedDiscussion={selectedDiscussion}
-            comments={comments}
-            onSelectDiscussion={handleSelectDiscussion}
-            onAddComment={handleAddComment}
-            onResolveDiscussion={handleResolveDiscussion}
-          />
+          <>
+            {incomingDraft && (
+              <form
+                className="mb-5 rounded-xl border border-purple-300 p-4 space-y-3"
+                onSubmit={async (event) => {
+                  event.preventDefault();
+                  if (publishingDraft) return;
+                  setPublishingDraft(true);
+                  try {
+                    await handleCreateDiscussion(draftTitle, draftContent, null);
+                    success('Discussion published to GitHub.');
+                    navigate(location.pathname, { replace: true, state: null });
+                  } catch {
+                    showError('Could not publish this discussion. Your draft is retained.');
+                  } finally {
+                    setPublishingDraft(false);
+                  }
+                }}
+              >
+                <p className="text-sm font-bold">Review discussion draft</p>
+                <input
+                  aria-label="Discussion title"
+                  value={draftTitle}
+                  required
+                  maxLength={255}
+                  onChange={(event) => setDraftTitle(event.target.value)}
+                  className="w-full rounded border p-2 text-slate-900"
+                />
+                <textarea
+                  aria-label="Discussion content"
+                  value={draftContent}
+                  required
+                  maxLength={60000}
+                  onChange={(event) => setDraftContent(event.target.value)}
+                  className="w-full rounded border p-2 text-slate-900"
+                  rows={6}
+                />
+                <button
+                  disabled={publishingDraft || !draftTitle.trim() || !draftContent.trim()}
+                  className="rounded bg-purple-600 px-4 py-2 text-white"
+                >
+                  Publish discussion
+                </button>
+              </form>
+            )}
+            <ThreadView
+              key={selectedDiscussion?.id || 'empty'}
+              repoId={repo.id}
+              discussions={discussions}
+              selectedDiscussion={selectedDiscussion}
+              comments={comments}
+              onSelectDiscussion={handleSelectDiscussion}
+              onAddComment={handleAddComment}
+              onResolveDiscussion={handleResolveDiscussion}
+            />
+          </>
         )}
 
         {/* TAB 3: WORKFLOWS */}
@@ -425,7 +503,8 @@ export const RepositoryWorkspace: React.FC = () => {
               </div>
 
               <div className="text-xs text-slate-500 dark:text-slate-400 font-mono">
-                Showing <b className="text-slate-900 dark:text-white">{filteredRuns.length}</b> workflow runs
+                Showing <b className="text-slate-900 dark:text-white">{filteredRuns.length}</b>{' '}
+                workflow runs
               </div>
             </div>
 
@@ -454,7 +533,8 @@ export const RepositoryWorkspace: React.FC = () => {
             </div>
             {collaborators.length === 0 && (
               <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0E121D] p-8 text-center text-xs text-slate-500 dark:text-slate-400">
-                GitHub returned no collaborators for this repository, or your token cannot view its access list.
+                GitHub returned no collaborators for this repository, or your token cannot view its
+                access list.
               </div>
             )}
 
@@ -466,7 +546,9 @@ export const RepositoryWorkspace: React.FC = () => {
                     <Users className="h-4 w-4 text-purple-600 dark:text-purple-400" />
                     Team Developer Discussions
                   </h3>
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400">Active repository team members can review and discuss failures together</p>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Active repository team members can review and discuss failures together
+                  </p>
                 </div>
                 <button
                   onClick={() => handleTabClick('threads')}
@@ -494,11 +576,17 @@ export const RepositoryWorkspace: React.FC = () => {
                         className="h-6 w-6 rounded-full object-cover ring-1 ring-slate-300 dark:ring-slate-700"
                       />
                       <div>
-                        <h4 className="text-xs font-bold text-slate-900 dark:text-white">{disc.title}</h4>
-                        <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">by @{disc.author.username} • {disc.commentsCount} replies</span>
+                        <h4 className="text-xs font-bold text-slate-900 dark:text-white">
+                          {disc.title}
+                        </h4>
+                        <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">
+                          by @{disc.author.username} • {disc.commentsCount} replies
+                        </span>
                       </div>
                     </div>
-                    <span className="text-xs font-bold text-purple-600 dark:text-purple-400 hover:underline">View Thread →</span>
+                    <span className="text-xs font-bold text-purple-600 dark:text-purple-400 hover:underline">
+                      View Thread →
+                    </span>
                   </div>
                 ))}
               </div>

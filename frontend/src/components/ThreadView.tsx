@@ -1,16 +1,16 @@
-import React, { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import axios from 'axios';
-import { 
-  MessageSquare, Send, Pin,
-  Terminal, Bot, Check, Copy, Sparkles
-} from 'lucide-react';
-import { Discussion, Comment } from '../types';
+import { Check, MessageSquare, Pin, Send, Sparkles, Terminal } from 'lucide-react';
+import React, { useState } from 'react';
+import { useAIAssistant } from '../contexts/assistantState';
+import { useAuth } from '../contexts/authState';
+import { useToast } from '../contexts/toastState';
+import { aiService } from '../services/aiService';
+import { Comment, Discussion } from '../types';
 import { AIExplanationCard } from './AIExplanationCard';
-import { SimilarFailureCard } from './SimilarFailureCard';
-import { useToast } from '../contexts/ToastContext';
-import { useAIAssistant } from '../contexts/AIAssistantContext';
 
 interface ThreadViewProps {
+  repoId: string;
   discussions: Discussion[];
   selectedDiscussion: Discussion | null;
   comments: Comment[];
@@ -20,18 +20,26 @@ interface ThreadViewProps {
 }
 
 export const ThreadView: React.FC<ThreadViewProps> = ({
+  repoId,
   discussions,
   selectedDiscussion,
   comments,
   onSelectDiscussion,
   onAddComment,
-  onResolveDiscussion
+  onResolveDiscussion,
 }) => {
   const { success, error: showError } = useToast();
   const { openAssistant } = useAIAssistant();
   const [replyText, setReplyText] = useState('');
   const [isResolving, setIsResolving] = useState(false);
   const [copiedFix, setCopiedFix] = useState(false);
+  const [posting, setPosting] = useState(false);
+  const { user } = useAuth();
+  const diagnosis = useQuery({
+    queryKey: ['saved-analysis', user?.id, repoId, selectedDiscussion?.runId],
+    queryFn: () => aiService.getSavedAnalysis(selectedDiscussion!.runId!, repoId),
+    enabled: !!selectedDiscussion?.runId,
+  });
 
   const handleToggleResolve = async () => {
     if (!selectedDiscussion || !onResolveDiscussion) return;
@@ -40,8 +48,10 @@ export const ThreadView: React.FC<ThreadViewProps> = ({
       const nextStatus = selectedDiscussion.status === 'resolved' ? 'open' : 'resolved';
       await onResolveDiscussion(selectedDiscussion.id, nextStatus);
       success(
-        nextStatus === 'resolved' ? 'Discussion thread resolved on GitHub.' : 'Discussion thread reopened on GitHub.',
-        nextStatus === 'resolved' ? 'Thread Resolved' : 'Thread Reopened'
+        nextStatus === 'resolved'
+          ? 'Discussion thread resolved on GitHub.'
+          : 'Discussion thread reopened on GitHub.',
+        nextStatus === 'resolved' ? 'Thread Resolved' : 'Thread Reopened',
       );
     } catch (error) {
       const detail = axios.isAxiosError(error) ? error.response?.data?.detail : null;
@@ -53,7 +63,8 @@ export const ThreadView: React.FC<ThreadViewProps> = ({
 
   const handleSendReply = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!replyText.trim() || !selectedDiscussion) return;
+    if (!replyText.trim() || !selectedDiscussion || posting) return;
+    setPosting(true);
     const userText = replyText;
     try {
       await onAddComment(selectedDiscussion.id, userText);
@@ -61,16 +72,16 @@ export const ThreadView: React.FC<ThreadViewProps> = ({
       success('Message sent to the GitHub thread.', 'Reply Posted');
     } catch (error) {
       const detail = axios.isAxiosError(error) ? error.response?.data?.detail : null;
-      showError(typeof detail === 'string' ? detail : 'Could not post this reply.', 'Reply not posted');
+      showError(
+        typeof detail === 'string' ? detail : 'Could not post this reply.',
+        'Reply not posted',
+      );
+    } finally {
+      setPosting(false);
     }
   };
 
-  const suggestedFixCode = 
-`# Option 1: Run npm install with peer bypass in workflow yaml
-npm install --legacy-peer-deps
-
-# Option 2: Pin React to stable 18.2.0 in package.json
-npm install react@^18.2.0 react-dom@^18.2.0`;
+  const suggestedFixCode = diagnosis.data?.suggestedFix || '';
 
   const handleCopyFix = () => {
     navigator.clipboard.writeText(suggestedFixCode);
@@ -92,7 +103,9 @@ npm install react@^18.2.0 react-dom@^18.2.0`;
                   {discussions.length}
                 </span>
               </h3>
-              <p className="text-[10px] text-slate-500 dark:text-slate-400">Team failure discussions & solutions</p>
+              <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                Team failure discussions & solutions
+              </p>
             </div>
           </div>
 
@@ -117,7 +130,9 @@ npm install react@^18.2.0 react-dom@^18.2.0`;
                       {isLatest && (
                         <span className="h-2 w-2 rounded-full bg-rose-500 animate-ping shrink-0" />
                       )}
-                      <h4 className={`text-xs font-bold truncate ${isSelected ? 'text-purple-700 dark:text-purple-300' : 'text-slate-800 dark:text-slate-200'}`}>
+                      <h4
+                        className={`text-xs font-bold truncate ${isSelected ? 'text-purple-700 dark:text-purple-300' : 'text-slate-800 dark:text-slate-200'}`}
+                      >
                         {disc.title}
                       </h4>
                     </div>
@@ -135,7 +150,9 @@ npm install react@^18.2.0 react-dom@^18.2.0`;
                         alt=""
                         className="h-4 w-4 rounded-full object-cover ring-1 ring-slate-300 dark:ring-slate-700"
                       />
-                      <span className="text-slate-700 dark:text-slate-300 font-medium">@{disc.author.username}</span>
+                      <span className="text-slate-700 dark:text-slate-300 font-medium">
+                        @{disc.author.username}
+                      </span>
                     </div>
                     <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold">
                       <MessageSquare className="h-3 w-3" />
@@ -158,25 +175,31 @@ npm install react@^18.2.0 react-dom@^18.2.0`;
               {/* Thread Header Info */}
               <div className="flex items-start justify-between gap-3 pb-3 border-b border-slate-200 dark:border-slate-800">
                 <div>
-                  <h3 className="text-base font-bold text-slate-900 dark:text-white">{selectedDiscussion.title}</h3>
+                  <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                    {selectedDiscussion.title}
+                  </h3>
                   <div className="flex items-center gap-2 mt-1 text-[11px] text-slate-500 dark:text-slate-400">
                     <img
                       src={selectedDiscussion.author.avatarUrl}
                       alt=""
                       className="h-4 w-4 rounded-full object-cover ring-1 ring-purple-500/30"
                     />
-                    <span className="text-slate-800 dark:text-slate-200 font-semibold">@{selectedDiscussion.author.username}</span>
+                    <span className="text-slate-800 dark:text-slate-200 font-semibold">
+                      @{selectedDiscussion.author.username}
+                    </span>
                     <span>•</span>
                     <span>{selectedDiscussion.timestamp || 'Today'}</span>
                   </div>
                 </div>
 
                 <div className="flex items-center gap-2">
-                  <span className={`rounded-full border px-2.5 py-0.5 text-[10px] font-mono font-bold ${
-                    selectedDiscussion.status === 'resolved'
-                      ? 'border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300'
-                      : 'border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300'
-                  }`}>
+                  <span
+                    className={`rounded-full border px-2.5 py-0.5 text-[10px] font-mono font-bold ${
+                      selectedDiscussion.status === 'resolved'
+                        ? 'border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300'
+                        : 'border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300'
+                    }`}
+                  >
                     {selectedDiscussion.status === 'resolved' ? 'Resolved' : 'Open'}
                   </span>
                   {onResolveDiscussion && (
@@ -195,7 +218,12 @@ npm install react@^18.2.0 react-dom@^18.2.0`;
                     </button>
                   )}
                   <button
-                    onClick={() => openAssistant(`Analyze thread failure: ${selectedDiscussion.title}\n\n${selectedDiscussion.content}`)}
+                    onClick={() =>
+                      openAssistant(
+                        `Analyze thread failure: ${selectedDiscussion.title}\n\n${selectedDiscussion.content}`,
+                        repoId,
+                      )
+                    }
                     className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-purple-50 dark:bg-purple-950/40 hover:bg-purple-100 dark:hover:bg-purple-900/50 border border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-300 text-[11px] font-bold transition-all"
                   >
                     <Sparkles className="h-3 w-3 text-purple-600 dark:text-purple-400" />
@@ -218,43 +246,39 @@ npm install react@^18.2.0 react-dom@^18.2.0`;
                 </pre>
               </div>
 
-              {/* 2. AI Failure Diagnostics & Root Cause Card */}
-              <AIExplanationCard
-                summary="The CI run failed during npm dependency resolution because react-router-dom expects React 18, whereas the repository has react@19-rc. NPM v9+ halts on peer dependency mismatches by default."
-                rootCause="Strict peer dependency mismatch: react@19.0.0 vs react-router-dom peer requirement ^18.0.0"
-              />
-
-              {/* 3. Suggested Fix & Patch Card */}
-              <div className="rounded-xl border border-purple-200 dark:border-purple-800/80 bg-purple-50/50 dark:bg-purple-950/20 p-3.5 text-xs space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-purple-800 dark:text-purple-300 uppercase tracking-wider font-mono">
-                    Suggested Resolution & Patch
-                  </span>
-                  <button
-                    onClick={handleCopyFix}
-                    className="flex items-center gap-1 px-2.5 py-1 rounded bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 border border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-300 text-[10px] font-bold transition-all shadow-sm"
-                  >
-                    {copiedFix ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
-                    <span>{copiedFix ? 'Copied' : 'Copy Fix'}</span>
-                  </button>
-                </div>
-                <pre className="font-mono text-[11px] text-slate-800 dark:text-slate-200 bg-white dark:bg-slate-950 p-2.5 rounded-lg border border-slate-200 dark:border-slate-800 overflow-x-auto">
-                  {suggestedFixCode}
-                </pre>
-              </div>
-
-              {/* 4. Similar Past Failure RAG Match */}
-              <SimilarFailureCard
-                pastFailureId="89"
-                repoName="FlowForge-AI"
-                errorSnippet="npm ERR! ERESOLVE could not resolve peer dep react@18"
-                fixedBy={{
-                  name: 'Bharathi',
-                  username: 'bharathi1216',
-                  avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop&q=80'
-                }}
-                solutionSummary="Added --legacy-peer-deps flag to GitHub Actions workflow yaml step."
-              />
+              {diagnosis.isError && (
+                <p role="alert" className="text-xs text-amber-600">
+                  Saved diagnostics could not be loaded.
+                </p>
+              )}
+              {diagnosis.data ? (
+                <>
+                  <AIExplanationCard
+                    summary={diagnosis.data.summary}
+                    rootCause={diagnosis.data.rootCause}
+                    repoId={repoId}
+                  />
+                  {suggestedFixCode && (
+                    <div className="rounded-xl border border-purple-200 dark:border-purple-800 p-4 space-y-2">
+                      <button onClick={handleCopyFix} className="text-xs font-bold text-purple-600">
+                        {copiedFix ? 'Copied' : 'Copy saved fix'}
+                      </button>
+                      <pre className="whitespace-pre-wrap text-xs">{suggestedFixCode}</pre>
+                    </div>
+                  )}
+                  {diagnosis.data.similarPreviousRunId && (
+                    <p className="text-xs text-slate-500">
+                      Historical reference: run #{diagnosis.data.similarPreviousRunNumber} (
+                      {diagnosis.data.similarMatchPercent}% similarity).
+                    </p>
+                  )}
+                </>
+              ) : (
+                <p className="text-xs text-slate-500">
+                  No saved diagnosis is linked to this discussion. Analyze its workflow run to add
+                  diagnostics.
+                </p>
+              )}
             </div>
 
             {/* Teammates Chat Stream */}
@@ -264,8 +288,9 @@ npm install react@^18.2.0 react-dom@^18.2.0`;
               </div>
 
               {comments.map((comment) => {
-                const isCurrentUser = comment.author.username === 'bharathi1216';
-                const isAI = comment.author.username === 'flowforge-ai' || comment.content.includes('🤖');
+                const isCurrentUser = comment.author.username === user?.username;
+                const isAI =
+                  comment.author.username === 'flowforge-ai' || comment.content.includes('🤖');
                 return (
                   <div
                     key={comment.id}
@@ -281,8 +306,8 @@ npm install react@^18.2.0 react-dom@^18.2.0`;
                         isCurrentUser
                           ? 'bg-purple-600 text-white shadow-sm'
                           : isAI
-                          ? 'bg-purple-50 dark:bg-purple-950/30 border border-purple-200 dark:border-purple-800/80 text-slate-800 dark:text-slate-200'
-                          : 'bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-800 dark:text-slate-200'
+                            ? 'bg-purple-50 dark:bg-purple-950/30 border border-purple-200 dark:border-purple-800/80 text-slate-800 dark:text-slate-200'
+                            : 'bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-800 dark:text-slate-200'
                       }`}
                     >
                       <div className="flex items-center justify-between gap-3 text-[10px] opacity-85 mb-1 font-mono">
@@ -297,7 +322,10 @@ npm install react@^18.2.0 react-dom@^18.2.0`;
             </div>
 
             {/* Developer Query / Chat Input Bar */}
-            <form onSubmit={handleSendReply} className="flex items-center gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+            <form
+              onSubmit={handleSendReply}
+              className="flex items-center gap-2 pt-2 border-t border-slate-200 dark:border-slate-800"
+            >
               <input
                 type="text"
                 placeholder="Ask AI for a patch, discuss with team, or type a question..."
@@ -317,7 +345,9 @@ npm install react@^18.2.0 react-dom@^18.2.0`;
         ) : (
           <div className="flex flex-col items-center justify-center h-full text-center text-slate-400 p-8">
             <MessageSquare className="h-8 w-8 text-slate-400 mb-2" />
-            <span className="text-xs">Select a thread on the left to inspect logs, AI diagnosis, and reply</span>
+            <span className="text-xs">
+              Select a thread on the left to inspect logs, AI diagnosis, and reply
+            </span>
           </div>
         )}
       </div>

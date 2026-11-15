@@ -1,16 +1,16 @@
+import { RefreshCw, Send, Sparkles, User } from 'lucide-react';
 import React, { useState } from 'react';
-import { Sparkles, Send, Bot, User, RefreshCw } from 'lucide-react';
-import { AIMessage } from '../types';
 import { aiService } from '../services/aiService';
+import { AIMessage } from '../types';
 
 interface AIAssistantChatProps {
   repoName: string;
 }
 
 const initialPrompts = [
-  "Why did the last build fail?",
-  "Summarize recent workflow runs",
-  "Who contributed to recent commits?"
+  'Why did the last build fail?',
+  'Summarize recent workflow runs',
+  'Who contributed to recent commits?',
 ];
 
 export const AIAssistantChat: React.FC<AIAssistantChatProps> = ({ repoName }) => {
@@ -19,8 +19,8 @@ export const AIAssistantChat: React.FC<AIAssistantChatProps> = ({ repoName }) =>
       id: '1',
       role: 'assistant',
       content: `Hello! I'm your FlowForge AI assistant for ${repoName}. I can inspect workflow error logs, explain CI issues, find who resolved similar issues in your past commits, and summarize run history. How can I help today?`,
-      timestamp: 'Just now'
-    }
+      timestamp: 'Just now',
+    },
   ]);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
@@ -30,10 +30,10 @@ export const AIAssistantChat: React.FC<AIAssistantChatProps> = ({ repoName }) =>
     if (!text.trim()) return;
 
     const userMsg: AIMessage = {
-      id: Date.now().toString(),
+      id: crypto.randomUUID(),
       role: 'user',
       content: text,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
 
     const newMessages = [...messages, userMsg];
@@ -48,11 +48,11 @@ export const AIAssistantChat: React.FC<AIAssistantChatProps> = ({ repoName }) =>
       setMessages((prev) => [
         ...prev,
         {
-          id: (Date.now() + 1).toString(),
+          id: crypto.randomUUID(),
           role: 'assistant',
-          content: `I analyzed ${repoName}. You can inspect recent failures in the Failure Analysis tab or trigger rerun operations.`,
+          content: `The assistant could not respond. Please try again.`,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        }
+        },
       ]);
     } finally {
       setIsTyping(false);
@@ -73,7 +73,9 @@ export const AIAssistantChat: React.FC<AIAssistantChatProps> = ({ repoName }) =>
               RAG Active
             </span>
           </h3>
-          <p className="text-[10px] text-slate-400">Contextual answers grounded in {repoName} logs & code</p>
+          <p className="text-[10px] text-slate-400">
+            Contextual answers grounded in {repoName} logs & code
+          </p>
         </div>
       </div>
 

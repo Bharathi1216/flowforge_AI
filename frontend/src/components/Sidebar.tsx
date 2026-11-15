@@ -1,17 +1,14 @@
-import React, { useState } from 'react';
-import { useNavigate, useLocation, useParams } from 'react-router-dom';
-import { LayoutDashboard, FolderKanban, Activity, Settings, X, Plus } from 'lucide-react';
-import { useAuth } from '../contexts/AuthContext';
+import { Activity, LayoutDashboard, Settings } from 'lucide-react';
+import React from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 interface SidebarProps {
   onOpenCommandPalette: () => void;
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({ onOpenCommandPalette }) => {
+export const Sidebar: React.FC<SidebarProps> = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { user, selectedRepoNames, logout } = useAuth();
-  const [mobileOpen, setMobileOpen] = useState(false);
 
   const navLinks = [
     { name: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },

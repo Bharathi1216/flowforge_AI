@@ -1,31 +1,32 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
-
-interface AIAssistantContextType {
-  isOpen: boolean;
-  openAssistant: (initialPrompt?: string, repoContext?: string) => void;
-  closeAssistant: () => void;
-  toggleAssistant: () => void;
-  currentRepoContext: string | null;
-  initialPrompt: string | null;
-  setInitialPrompt: (prompt: string | null) => void;
-}
-
-const AIAssistantContext = createContext<AIAssistantContextType | undefined>(undefined);
+import React, { useCallback, useEffect, useState } from 'react';
+import { useLocation } from 'react-router-dom';
+import { AIMessage } from '../types';
+import { AIAssistantContext } from './assistantState';
 
 export const AIAssistantProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [isOpen, setIsOpen] = useState(false);
-  const [currentRepoContext, setCurrentRepoContext] = useState<string | null>('FlowForge-AI');
+  const [currentRepoContext, setCurrentRepoContext] = useState<string | null>(null);
   const [initialPrompt, setInitialPrompt] = useState<string | null>(null);
+  const [conversations, setConversations] = useState<Record<string, AIMessage[]>>({});
+  const location = useLocation();
+  const routeRepo = location.pathname.match(/^\/repositories\/([^/]+)/)?.[1];
+  const selectedContext = routeRepo ? decodeURIComponent(routeRepo) : currentRepoContext;
+  const updateMessages = useCallback(
+    (repoId: string, update: (messages: AIMessage[]) => AIMessage[]) => {
+      setConversations((current) => ({ ...current, [repoId]: update(current[repoId] || []) }));
+    },
+    [],
+  );
 
-  const openAssistant = (prompt?: string, repoContext?: string) => {
-    if (prompt) setInitialPrompt(prompt);
+  const openAssistant = useCallback((prompt?: string, repoContext?: string) => {
+    setInitialPrompt(prompt || null);
     if (repoContext) setCurrentRepoContext(repoContext);
     setIsOpen(true);
-  };
+  }, []);
 
-  const closeAssistant = () => {
+  const closeAssistant = useCallback(() => {
     setIsOpen(false);
-  };
+  }, []);
 
   const toggleAssistant = () => {
     setIsOpen((prev) => !prev);
@@ -46,24 +47,18 @@ export const AIAssistantProvider: React.FC<{ children: React.ReactNode }> = ({ c
   return (
     <AIAssistantContext.Provider
       value={{
+        conversations,
+        updateMessages,
         isOpen,
         openAssistant,
         closeAssistant,
         toggleAssistant,
-        currentRepoContext,
+        currentRepoContext: selectedContext,
         initialPrompt,
-        setInitialPrompt
+        setInitialPrompt,
       }}
     >
       {children}
     </AIAssistantContext.Provider>
   );
-};
-
-export const useAIAssistant = () => {
-  const context = useContext(AIAssistantContext);
-  if (!context) {
-    throw new Error('useAIAssistant must be used within an AIAssistantProvider');
-  }
-  return context;
 };

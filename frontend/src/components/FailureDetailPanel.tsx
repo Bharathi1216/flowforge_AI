@@ -1,14 +1,27 @@
-import React, { useEffect, useState } from 'react';
-import { 
-  Copy, Check, Terminal, AlertOctagon, MessageSquarePlus, 
-  Sparkles, RefreshCw, CheckCircle2, AlertCircle,
-  History, GitBranch, Eye, EyeOff, FileText
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  AlertCircle,
+  AlertOctagon,
+  Check,
+  CheckCircle2,
+  Copy,
+  Eye,
+  EyeOff,
+  FileText,
+  GitBranch,
+  History,
+  MessageSquarePlus,
+  RefreshCw,
+  Sparkles,
+  Terminal,
 } from 'lucide-react';
-import { WorkflowRun, FailureAnalysis, ProviderAnalysis } from '../types';
-import { useToast } from '../contexts/ToastContext';
-import { useAIAssistant } from '../contexts/AIAssistantContext';
-import { logService } from '../services/logService';
+import React, { useState } from 'react';
+import { useAIAssistant } from '../contexts/assistantState';
+import { useAuth } from '../contexts/authState';
+import { useToast } from '../contexts/toastState';
 import { aiService } from '../services/aiService';
+import { logService } from '../services/logService';
+import { ProviderAnalysis, WorkflowRun } from '../types';
 
 interface FailureDetailPanelProps {
   run: WorkflowRun;
@@ -19,115 +32,102 @@ interface FailureDetailPanelProps {
 export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
   run,
   repoId,
-  onPushToThread
+  onPushToThread,
 }) => {
   const { success, error: showError } = useToast();
   const { openAssistant } = useAIAssistant();
   const [copiedLogs, setCopiedLogs] = useState(false);
   const [copiedFix, setCopiedFix] = useState(false);
-  const [realLogs, setRealLogs] = useState<string>('');
-  const [logsError, setLogsError] = useState<string | null>(null);
-  const [showFullRawLogs, setShowFullRawLogs] = useState<boolean>(false);
-
-  // AI Diagnostic State
-  const [analysisLoading, setAnalysisLoading] = useState(false);
-  const [analysisData, setAnalysisData] = useState<FailureAnalysis | null>(null);
-  const [analysisError, setAnalysisError] = useState<string | null>(null);
-
-  // Fetch Workflow Logs
-  useEffect(() => {
-    let active = true;
-    setLogsError(null);
-    setRealLogs('Loading GitHub Actions logs...');
-    logService.getWorkflowLogs(run.id, repoId)
-      .then((logs) => {
-        if (active) {
-          setRealLogs(logs.map((line) => line.message).join('\n') || 'GitHub returned no downloadable log archive for this workflow job.');
-        }
-      })
-      .catch(() => {
-        if (active) {
-          setLogsError('Unable to retrieve GitHub Actions logs.');
-          setRealLogs('');
-        }
-      });
-    return () => { active = false; };
-  }, [repoId, run.id]);
-
-  // Automated Live AI Diagnostics on Run Change
-  useEffect(() => {
-    let active = true;
-    setAnalysisLoading(true);
-    setAnalysisError(null);
-    setAnalysisData(null);
-
-    aiService.analyzeFailure(run.id, run, repoId)
-      .then((data) => {
-        if (active && data) {
-          setAnalysisData(data);
-        }
-      })
-      .catch((err) => {
-        if (active) {
-          console.warn('AI analysis request error:', err);
-          setAnalysisError('Autonomous diagnostics unavailable. Click to re-run.');
-        }
-      })
-      .finally(() => {
-        if (active) {
-          setAnalysisLoading(false);
-        }
-      });
-
-    return () => { active = false; };
-  }, [repoId, run.id]);
-
+  const { user } = useAuth();
+  const queryClient = useQueryClient();
+  const [showFullRawLogs, setShowFullRawLogs] = useState(false);
+  const [reanalyzing, setReanalyzing] = useState(false);
+  const [manualError, setManualError] = useState<string | null>(null);
+  const logsKey = ['logs', user?.id, repoId, run.id, run.runAttempt || 1];
+  const analysisKey = ['analysis', user?.id, repoId, run.id, run.runAttempt || 1];
+  const logsQuery = useQuery({
+    queryKey: logsKey,
+    queryFn: () => logService.getWorkflowLogs(run.id, repoId),
+    staleTime: Infinity,
+  });
+  const analysisQuery = useQuery({
+    queryKey: analysisKey,
+    queryFn: () => aiService.analyzeFailure(run.id, undefined, repoId),
+    enabled: logsQuery.isSuccess && logsQuery.data.length > 0,
+    staleTime: Infinity,
+  });
+  const realLogs = logsQuery.isPending
+    ? 'Loading GitHub Actions logs...'
+    : (logsQuery.data || []).map((line) => line.message).join('\n');
+  const logsError = logsQuery.error
+    ? 'Unable to retrieve complete GitHub Actions logs. Retry when they are available.'
+    : null;
+  const analysisLoading = reanalyzing || (analysisQuery.isFetching && logsQuery.isSuccess);
+  const analysisData = analysisQuery.data || null;
+  const analysisError =
+    manualError || (analysisQuery.error ? 'Diagnostics unavailable. Retry analysis.' : null);
   const handleTriggerAnalysis = async () => {
-    setAnalysisLoading(true);
-    setAnalysisError(null);
+    if (reanalyzing) return;
+    setReanalyzing(true);
+    setManualError(null);
     try {
-      const data = await aiService.reanalyzeFailure(run.id, repoId);
-      if (data) {
-        setAnalysisData(data);
-        success('FlowForge AI diagnostic scan complete.', 'Analysis Ready');
-      } else {
-        setAnalysisError('Unable to produce diagnostic findings.');
-      }
+      const logs = await logsQuery.refetch();
+      if (logs.error || !logs.data?.length) throw new Error('Complete logs are required.');
+      await queryClient.fetchQuery({
+        queryKey: analysisKey,
+        staleTime: 0,
+        queryFn: () => aiService.reanalyzeFailure(run.id, repoId),
+      });
+      success('Diagnostic scan complete.', 'Analysis Ready');
     } catch {
-      setAnalysisError('Failed to execute AI diagnostics.');
-      showError('Diagnostic engine encountered an issue.', 'Scan Failed');
+      setManualError('Failed to execute AI diagnostics. Saved results remain available.');
+      showError('Diagnostic engine could not complete this request.', 'Scan Failed');
     } finally {
-      setAnalysisLoading(false);
+      setReanalyzing(false);
     }
   };
 
-  const errorMessage = run.diagnosticInfo?.errorSnippet || 
+  const errorMessage =
+    run.diagnosticInfo?.errorSnippet ||
     `GitHub Actions run #${run.runNumber} for '${run.name}' failed on branch '${run.branch}'.\nCommit: ${run.commitMessage} (${run.commitSha})\nExit status: Failure`;
 
-  const fallbackSuggestedFix = run.diagnosticInfo?.suggestedFix || 
+  const fallbackSuggestedFix =
+    run.diagnosticInfo?.suggestedFix ||
     `1. Inspect the failing step in GitHub Actions logs.\n2. Reproduce the failing command locally in your terminal.\n3. Verify all required secrets and environment variables are set in GitHub Repository Settings.`;
 
   const effectiveFix = analysisData?.suggestedFix || fallbackSuggestedFix;
-  const effectiveRootCause = analysisData?.rootCause || run.diagnosticInfo?.rootCause || errorMessage;
+  const effectiveRootCause =
+    analysisData?.rootCause || run.diagnosticInfo?.rootCause || errorMessage;
   const providerResults = analysisData?.providers;
   const groqResult = providerResults?.groq;
   const evidenceGraph = analysisData?.evidenceGraph;
   const graphNodesById = new Map(
-    (evidenceGraph?.nodes || []).map((node) => [node.event_id, node] as const)
+    (evidenceGraph?.nodes || []).map((node) => [node.event_id, node] as const),
   );
   const graphEdges = evidenceGraph?.edges.slice(0, 5) || [];
 
   const renderProvider = (provider: ProviderAnalysis | undefined, label: string) => {
     if (!provider) {
-      return <p className="text-xs text-slate-700 dark:text-slate-400">No saved result is available for {label}.</p>;
+      return (
+        <p className="text-xs text-slate-700 dark:text-slate-400">
+          No saved result is available for {label}.
+        </p>
+      );
     }
     if (provider.status === 'unavailable') {
-      return <p className="text-xs text-amber-700 dark:text-amber-300">Not configured. Add the provider API key on the backend to compare this model.</p>;
+      return (
+        <p className="text-xs text-amber-700 dark:text-amber-300">
+          This provider is not available for this workspace.
+        </p>
+      );
     }
     if (provider.status === 'failed') {
       return (
         <div className="space-y-2">
-          <p className="text-xs text-rose-700 dark:text-rose-300">This provider failed during analysis. The saved result is retained for deterministic reloads.</p>
+          <p className="text-xs text-rose-700 dark:text-rose-300">
+            This provider failed during analysis. The saved result is retained for deterministic
+            reloads.
+          </p>
           {provider.error && (
             <p className="rounded-lg border border-rose-200 dark:border-rose-500/20 bg-rose-50 dark:bg-rose-950/30 p-2 text-[10px] text-rose-800 dark:text-rose-200 font-mono break-words">
               {provider.error}
@@ -138,14 +138,24 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
     }
     return (
       <div className="space-y-3">
-        <p className="text-xs text-slate-700 dark:text-slate-200 leading-relaxed">{provider.summary}</p>
+        <p className="text-xs text-slate-700 dark:text-slate-200 leading-relaxed">
+          {provider.summary}
+        </p>
         <div>
-          <div className="text-[10px] font-bold uppercase tracking-wider text-rose-700 dark:text-rose-400 mb-1">Root Cause</div>
-          <p className="text-xs text-rose-700 dark:text-rose-200/90 whitespace-pre-wrap font-mono">{provider.rootCause}</p>
+          <div className="text-[10px] font-bold uppercase tracking-wider text-rose-700 dark:text-rose-400 mb-1">
+            Root Cause
+          </div>
+          <p className="text-xs text-rose-700 dark:text-rose-200/90 whitespace-pre-wrap font-mono">
+            {provider.rootCause}
+          </p>
         </div>
         <div>
-          <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-400 mb-1">Suggested Fix</div>
-          <p className="text-xs text-slate-600 dark:text-slate-300 whitespace-pre-wrap">{provider.suggestedFix}</p>
+          <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-400 mb-1">
+            Suggested Fix
+          </div>
+          <p className="text-xs text-slate-600 dark:text-slate-300 whitespace-pre-wrap">
+            {provider.suggestedFix}
+          </p>
         </div>
       </div>
     );
@@ -167,9 +177,8 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
 
   const handlePush = () => {
     const threadTitle = `[AI Diagnostic] Run #${run.runNumber}: ${run.name} Failure`;
-    const logsForThread = realLogs && realLogs !== 'Loading GitHub Actions logs...'
-      ? realLogs
-      : errorMessage;
+    const logsForThread =
+      realLogs && realLogs !== 'Loading GitHub Actions logs...' ? realLogs : errorMessage;
     const analysisExcerpt = analysisData?.summary
       ? `Summary:\n${analysisData.summary}\n\nRoot Cause:\n${effectiveRootCause}`
       : effectiveRootCause;
@@ -181,11 +190,16 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
     const promptContext = analysisData
       ? `Diagnose this GitHub Actions failure for Run #${run.runNumber} (${run.name}):\n\nRoot Cause: ${analysisData.rootCause}\n\nProposed Fix: ${analysisData.suggestedFix}\n\nCan you explain how to apply this safely?`
       : `Diagnose this GitHub Actions failure for Run #${run.runNumber} (${run.name}):\n\n${errorMessage}\n\nWhat are the recommended fixes?`;
-    openAssistant(promptContext, run.name);
+    openAssistant(promptContext, repoId);
   };
 
   return (
     <div className="space-y-5">
+      {logsError && (
+        <p role="alert" className="rounded-xl bg-amber-50 p-4 text-xs text-amber-900">
+          {logsError}
+        </p>
+      )}
       {/* 1. Action Banner: Quick Overview + Actions */}
       <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0E121D] p-5 shadow-sm flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3.5">
@@ -202,7 +216,12 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
               </span>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-mono">
-              Branch: <span className="text-slate-800 dark:text-slate-200 font-medium">{run.branch}</span> • Commit: <span className="text-slate-800 dark:text-slate-200 font-medium">#{run.commitSha || 'HEAD'}</span>
+              Branch:{' '}
+              <span className="text-slate-800 dark:text-slate-200 font-medium">{run.branch}</span> •
+              Commit:{' '}
+              <span className="text-slate-800 dark:text-slate-200 font-medium">
+                #{run.commitSha || 'HEAD'}
+              </span>
             </p>
           </div>
         </div>
@@ -259,7 +278,9 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
               className="p-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/80 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all disabled:opacity-50"
               title="Re-analyze with current Gemini and Groq providers"
             >
-              <RefreshCw className={`h-4 w-4 ${analysisLoading ? 'animate-spin text-purple-400' : ''}`} />
+              <RefreshCw
+                className={`h-4 w-4 ${analysisLoading ? 'animate-spin text-purple-400' : ''}`}
+              />
             </button>
           </div>
         </div>
@@ -280,18 +301,28 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
                   <div className="text-[11px] font-bold text-cyan-800 dark:text-cyan-300 uppercase font-mono tracking-wider">
                     Model Comparison
                   </div>
-                  <span className="text-[10px] text-slate-700 dark:text-slate-400 font-mono">Saved per workflow run</span>
+                  <span className="text-[10px] text-slate-700 dark:text-slate-400 font-mono">
+                    Saved per workflow run
+                  </span>
                 </div>
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
                   {(['gemini', 'groq'] as const).map((provider) => (
-                    <div key={provider} className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-black/30 p-3">
+                    <div
+                      key={provider}
+                      className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-black/30 p-3"
+                    >
                       <div className="flex items-center justify-between mb-2">
-                        <span className="text-xs font-bold text-slate-900 dark:text-white">{provider === 'gemini' ? 'Gemini' : 'Groq'}</span>
+                        <span className="text-xs font-bold text-slate-900 dark:text-white">
+                          {provider === 'gemini' ? 'Gemini' : 'Groq'}
+                        </span>
                         <span className="text-[10px] rounded-full border border-slate-300 dark:border-slate-700 px-2 py-0.5 text-slate-700 dark:text-slate-400">
                           {providerResults[provider]?.status || 'missing'}
                         </span>
                       </div>
-                      {renderProvider(provider === 'groq' ? groqResult : providerResults[provider], provider === 'gemini' ? 'Gemini' : 'Groq')}
+                      {renderProvider(
+                        provider === 'groq' ? groqResult : providerResults[provider],
+                        provider === 'gemini' ? 'Gemini' : 'Groq',
+                      )}
                     </div>
                   ))}
                 </div>
@@ -317,7 +348,10 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
                 </div>
                 <ul className="space-y-1.5">
                   {analysisData.evidence.map((ev, idx) => (
-                    <li key={idx} className="text-xs text-slate-700 dark:text-slate-300 font-mono flex items-start gap-2">
+                    <li
+                      key={idx}
+                      className="text-xs text-slate-700 dark:text-slate-300 font-mono flex items-start gap-2"
+                    >
                       <span className="text-amber-400 select-none">•</span>
                       <span>{ev}</span>
                     </li>
@@ -338,7 +372,8 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
                   </span>
                 </div>
                 <p className="text-[10px] text-slate-600 dark:text-slate-400">
-                  Candidate scores rank evidence; they are not probabilities. Event order alone does not establish causation.
+                  Candidate scores rank evidence; they are not probabilities. Event order alone does
+                  not establish causation.
                 </p>
                 {evidenceGraph.root_cause_candidates.length > 0 ? (
                   <ol className="space-y-2">
@@ -346,7 +381,10 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
                       const node = graphNodesById.get(candidate.event_id);
                       if (!node) return null;
                       return (
-                        <li key={candidate.event_id} className="rounded-lg border border-cyan-200/80 dark:border-cyan-500/20 bg-white/80 dark:bg-black/30 p-2.5">
+                        <li
+                          key={candidate.event_id}
+                          className="rounded-lg border border-cyan-200/80 dark:border-cyan-500/20 bg-white/80 dark:bg-black/30 p-2.5"
+                        >
                           <div className="flex items-center justify-between gap-2">
                             <span className="text-[10px] font-bold text-cyan-800 dark:text-cyan-300 uppercase font-mono">
                               Candidate #{candidate.rank} · Line {node.line_start}
@@ -374,8 +412,12 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
                       const target = graphNodesById.get(edge.target_node_id);
                       if (!source || !target) return null;
                       return (
-                        <li key={`${edge.source_node_id}-${edge.target_node_id}-${edge.relationship_type}-${index}`} className="text-[10px] text-slate-700 dark:text-slate-300 font-mono">
-                          Line {source.line_start} {edge.relationship_type} line {target.line_start}: {edge.supporting_evidence}
+                        <li
+                          key={`${edge.source_node_id}-${edge.target_node_id}-${edge.relationship_type}-${index}`}
+                          className="text-[10px] text-slate-700 dark:text-slate-300 font-mono"
+                        >
+                          Line {source.line_start} {edge.relationship_type} line {target.line_start}
+                          : {edge.supporting_evidence}
                         </li>
                       );
                     })}
@@ -393,7 +435,8 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
                     <span>Relevant Log Blocks</span>
                   </div>
                   <span className="text-[10px] text-slate-700 dark:text-slate-400 font-mono">
-                    {analysisData.importantLogBlocks.length} block{analysisData.importantLogBlocks.length > 1 ? 's' : ''} isolated
+                    {analysisData.importantLogBlocks.length} block
+                    {analysisData.importantLogBlocks.length > 1 ? 's' : ''} isolated
                   </span>
                 </div>
                 <div className="space-y-2">
@@ -401,21 +444,33 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
                     const startL = block.startLine ?? block.start_line ?? 1;
                     const endL = block.endLine ?? block.end_line ?? 1;
                     return (
-                      <div key={bIdx} className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-black/60 overflow-hidden text-xs font-mono">
+                      <div
+                        key={bIdx}
+                        className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-black/60 overflow-hidden text-xs font-mono"
+                      >
                         <div className="flex items-center justify-between px-3 py-1.5 bg-slate-100 dark:bg-slate-900/80 border-b border-slate-200 dark:border-slate-800 text-[10px] text-slate-700 dark:text-slate-400">
                           <span className="font-bold text-purple-700 dark:text-purple-300">
                             Block #{bIdx + 1}: Lines {startL}–{endL}
                           </span>
                           <div className="flex items-center gap-1.5">
                             {block.reasons?.slice(0, 2).map((r, rIdx) => (
-                              <span key={rIdx} className="px-1.5 py-0.5 rounded bg-purple-100 dark:bg-purple-950/60 border border-purple-200 dark:border-purple-500/20 text-purple-700 dark:text-purple-300 text-[9px]">
+                              <span
+                                key={rIdx}
+                                className="px-1.5 py-0.5 rounded bg-purple-100 dark:bg-purple-950/60 border border-purple-200 dark:border-purple-500/20 text-purple-700 dark:text-purple-300 text-[9px]"
+                              >
                                 {r}
                               </span>
                             ))}
                           </div>
                         </div>
                         <pre className="p-3 overflow-x-auto text-[11px] text-slate-700 dark:text-slate-200 leading-relaxed font-mono whitespace-pre select-text">
-                          {block.text || block.lines?.map(l => `${(l.lineNumber ?? l.line_number ?? 0).toString().padStart(5, ' ')} | ${l.text}`).join('\n')}
+                          {block.text ||
+                            block.lines
+                              ?.map(
+                                (l) =>
+                                  `${(l.lineNumber ?? l.line_number ?? 0).toString().padStart(5, ' ')} | ${l.text}`,
+                              )
+                              .join('\n')}
                         </pre>
                       </div>
                     );
@@ -443,7 +498,8 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
                       )}
                     </div>
                     <p className="text-[11px] text-indigo-700/80 dark:text-indigo-200/70 mt-0.5 font-mono">
-                      Identified via FlowForge Semantic Memory Engine • Historical failure pattern verified
+                      Identified via FlowForge Semantic Memory Engine • Historical failure pattern
+                      verified
                     </p>
                   </div>
                 </div>
@@ -461,7 +517,11 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
                   onClick={handleCopyFix}
                   className="flex items-center gap-1 text-[11px] font-bold text-purple-700 dark:text-purple-300 hover:text-purple-900 dark:hover:text-white px-3 py-1 rounded-lg bg-purple-50 dark:bg-purple-900/30 hover:bg-purple-100 dark:hover:bg-purple-900/50 border border-purple-200 dark:border-purple-500/30 transition-all shadow-sm"
                 >
-                  {copiedFix ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+                  {copiedFix ? (
+                    <Check className="h-3.5 w-3.5 text-emerald-400" />
+                  ) : (
+                    <Copy className="h-3.5 w-3.5" />
+                  )}
                   <span>{copiedFix ? 'Copied' : 'Copy Fix'}</span>
                 </button>
               </div>
@@ -473,7 +533,11 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
             {/* Card Action Footer */}
             <div className="pt-2 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 dark:border-slate-800/80">
               <div className="text-[11px] text-slate-500 dark:text-slate-400 font-mono">
-                Engine: <span className="text-purple-700 dark:text-purple-400 font-semibold">FlowForge Intelligence Core</span> • Grounded in Run History
+                Engine:{' '}
+                <span className="text-purple-700 dark:text-purple-400 font-semibold">
+                  FlowForge Intelligence Core
+                </span>{' '}
+                • Grounded in Run History
               </div>
               <div className="flex items-center gap-2">
                 <button
@@ -525,8 +589,8 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
                   step.status === 'failed'
                     ? 'border-rose-500/40 bg-rose-500/10 text-rose-600 dark:text-rose-400 font-bold'
                     : step.status === 'success'
-                    ? 'border-slate-200 dark:border-slate-800/60 bg-slate-50 dark:bg-slate-950/50 text-slate-700 dark:text-slate-300'
-                    : 'border-slate-200 dark:border-slate-800/40 text-slate-400'
+                      ? 'border-slate-200 dark:border-slate-800/60 bg-slate-50 dark:bg-slate-950/50 text-slate-700 dark:text-slate-300'
+                      : 'border-slate-200 dark:border-slate-800/40 text-slate-400'
                 }`}
               >
                 <div className="flex items-center gap-2">
@@ -558,14 +622,22 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
               onClick={() => setShowFullRawLogs(!showFullRawLogs)}
               className="px-3 py-1.5 rounded-xl border border-purple-500/30 bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-900/60 text-[11px] font-mono font-bold transition-all flex items-center gap-1.5 shadow-sm"
             >
-              {showFullRawLogs ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+              {showFullRawLogs ? (
+                <EyeOff className="h-3.5 w-3.5" />
+              ) : (
+                <Eye className="h-3.5 w-3.5" />
+              )}
               <span>{showFullRawLogs ? 'Hide Full Raw Log' : 'View Full Raw Log'}</span>
             </button>
             <button
               onClick={handleCopyLogs}
               className="hover:text-purple-600 dark:hover:text-white transition-colors flex items-center gap-1 font-bold text-slate-500 dark:text-slate-400 text-[11px] px-2 py-1"
             >
-              {copiedLogs ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}
+              {copiedLogs ? (
+                <Check className="h-3.5 w-3.5 text-emerald-500" />
+              ) : (
+                <Copy className="h-3.5 w-3.5" />
+              )}
               <span>{copiedLogs ? 'Copied' : 'Copy'}</span>
             </button>
           </div>
@@ -574,7 +646,10 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
         {showFullRawLogs ? (
           <div className="relative rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 overflow-hidden shadow-inner">
             <div className="flex items-center justify-between px-4 py-2 bg-slate-100 dark:bg-black/50 border-b border-slate-200 dark:border-slate-800 text-[10px] text-slate-500 dark:text-slate-400 font-mono">
-              <span>Commit {run.commitSha || 'HEAD'} • {run.name} • Run #{run.runNumber} (Complete Preserved Raw Log)</span>
+              <span>
+                Commit {run.commitSha || 'HEAD'} • {run.name} • Run #{run.runNumber} (Complete
+                Preserved Raw Log)
+              </span>
               <span className="text-rose-400">Exit Code: 1</span>
             </div>
 
@@ -586,7 +661,10 @@ export const FailureDetailPanel: React.FC<FailureDetailPanelProps> = ({
           <div className="rounded-xl border border-slate-200 dark:border-slate-800/80 bg-slate-50 dark:bg-slate-950/40 p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs font-mono">
             <div className="flex items-center gap-2.5 text-slate-600 dark:text-slate-400">
               <FileText className="h-4 w-4 text-purple-400 flex-shrink-0" />
-              <span>Complete workflow logs preserved in Supabase. Critical failure segments isolated above.</span>
+              <span>
+                Complete workflow logs preserved in Supabase. Critical failure segments isolated
+                above.
+              </span>
             </div>
             <button
               onClick={() => setShowFullRawLogs(true)}

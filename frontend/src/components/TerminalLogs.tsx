@@ -1,27 +1,42 @@
-import React, { useState, useMemo } from 'react';
-import { Search, AlertTriangle, AlertCircle, Copy, Download, Brain, ChevronDown, ChevronRight, CheckCircle2, RotateCw } from 'lucide-react';
-import { LogLine, FailureAnalysis } from '../types';
+import {
+  AlertCircle,
+  AlertTriangle,
+  Brain,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  Download,
+  Search,
+} from 'lucide-react';
+import React, { useMemo, useState } from 'react';
 import { aiService } from '../services/aiService';
+import { FailureAnalysis, LogLine } from '../types';
 import { RAGVisualizer } from './RAGVisualizer';
 
 interface TerminalLogsProps {
   runId: string;
+  repoId: string;
   logs: LogLine[];
   onStartDiscussion?: (excerpt: string) => void;
 }
 
-export const TerminalLogs: React.FC<TerminalLogsProps> = ({ runId, logs, onStartDiscussion }) => {
+export const TerminalLogs: React.FC<TerminalLogsProps> = ({
+  runId,
+  repoId,
+  logs,
+  onStartDiscussion,
+}) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterError, setFilterError] = useState(false);
   const [filterWarning, setFilterWarning] = useState(false);
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     'Initialize environment': true,
-    'Checkout': true,
+    Checkout: true,
     'Node Setup': true,
     'Install Dependencies': true,
-    'Clean Up': true
+    'Clean Up': true,
   });
-  
+
   // AI analysis states
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<FailureAnalysis | null>(null);
@@ -30,7 +45,7 @@ export const TerminalLogs: React.FC<TerminalLogsProps> = ({ runId, logs, onStart
   // Group logs by section name
   const logsBySection = useMemo(() => {
     const sections: Record<string, LogLine[]> = {};
-    logs.forEach(line => {
+    logs.forEach((line) => {
       const section = line.section || 'General';
       if (!sections[section]) {
         sections[section] = [];
@@ -51,21 +66,25 @@ export const TerminalLogs: React.FC<TerminalLogsProps> = ({ runId, logs, onStart
   };
 
   const toggleSection = (section: string) => {
-    setExpandedSections(prev => ({
+    setExpandedSections((prev) => ({
       ...prev,
-      [section]: !prev[section]
+      [section]: !prev[section],
     }));
   };
 
   const handleCopy = () => {
-    const text = logs.map(l => `[${l.timestamp}] ${l.type.toUpperCase()}: ${l.message}`).join('\n');
+    const text = logs
+      .map((l) => `[${l.timestamp}] ${l.type.toUpperCase()}: ${l.message}`)
+      .join('\n');
     navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
   const handleDownload = () => {
-    const text = logs.map(l => `[${l.timestamp}] ${l.type.toUpperCase()}: ${l.message}`).join('\n');
+    const text = logs
+      .map((l) => `[${l.timestamp}] ${l.type.toUpperCase()}: ${l.message}`)
+      .join('\n');
     const blob = new Blob([text], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -80,7 +99,7 @@ export const TerminalLogs: React.FC<TerminalLogsProps> = ({ runId, logs, onStart
   const handleAIAnalyze = async () => {
     setIsAnalyzing(true);
     try {
-      const result = await aiService.analyzeFailure(runId);
+      const result = await aiService.analyzeFailure(runId, undefined, repoId);
       setAnalysisResult(result);
     } catch (err) {
       console.error(err);
@@ -92,8 +111,8 @@ export const TerminalLogs: React.FC<TerminalLogsProps> = ({ runId, logs, onStart
   // Get lines causing the error to attach to discussion
   const getErrorExcerpt = () => {
     return logs
-      .filter(l => l.type === 'error')
-      .map(l => `Line ${l.lineNumber}: ${l.message}`)
+      .filter((l) => l.type === 'error')
+      .map((l) => `Line ${l.lineNumber}: ${l.message}`)
       .join('\n');
   };
 
@@ -109,7 +128,7 @@ export const TerminalLogs: React.FC<TerminalLogsProps> = ({ runId, logs, onStart
               type="text"
               placeholder="Search logs..."
               value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
+              onChange={(e) => setSearchQuery(e.target.value)}
               className="w-56 rounded-lg border border-slate-200 bg-white py-1.5 pl-9 pr-4 text-sm outline-none dark:border-slate-800 dark:bg-slate-950 focus-ring"
             />
           </div>
@@ -180,24 +199,26 @@ export const TerminalLogs: React.FC<TerminalLogsProps> = ({ runId, logs, onStart
             <span className="h-3 w-3 rounded-full bg-rose-500" />
             <span className="h-3 w-3 rounded-full bg-amber-500" />
             <span className="h-3 w-3 rounded-full bg-emerald-500" />
-            <span className="ml-2 text-[10px] uppercase font-bold tracking-wider">bash - run-{runId}</span>
+            <span className="ml-2 text-[10px] uppercase font-bold tracking-wider">
+              bash - run-{runId}
+            </span>
           </div>
           <span className="text-[10px]">UTF-8</span>
         </div>
 
         {/* Console logs */}
         <div className="space-y-4 max-h-[500px] overflow-y-auto scrollbar-terminal pr-2">
-          {Object.keys(logsBySection).map(sectionName => {
+          {Object.keys(logsBySection).map((sectionName) => {
             const sectionLines = logsBySection[sectionName];
             const isExpanded = expandedSections[sectionName] ?? false;
-            
+
             // Check if section contains any match
             const matchingLines = sectionLines.filter(filterLine);
             if (matchingLines.length === 0 && searchQuery) return null;
 
             // Check if section contains error to display red badge on closed header
-            const hasError = sectionLines.some(l => l.type === 'error');
-            const hasWarning = sectionLines.some(l => l.type === 'warn');
+            const hasError = sectionLines.some((l) => l.type === 'error');
+            const hasWarning = sectionLines.some((l) => l.type === 'warn');
 
             return (
               <div key={sectionName} className="space-y-1.5">
@@ -207,14 +228,32 @@ export const TerminalLogs: React.FC<TerminalLogsProps> = ({ runId, logs, onStart
                   className="flex w-full items-center justify-between rounded bg-slate-900/50 px-2.5 py-2 text-left font-medium text-slate-300 hover:bg-slate-900"
                 >
                   <div className="flex items-center gap-2">
-                    {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                    {isExpanded ? (
+                      <ChevronDown className="h-4 w-4" />
+                    ) : (
+                      <ChevronRight className="h-4 w-4" />
+                    )}
                     <span>{sectionName}</span>
-                    <span className="text-[10px] text-slate-500 font-normal">({matchingLines.length} lines)</span>
+                    <span className="text-[10px] text-slate-500 font-normal">
+                      ({matchingLines.length} lines)
+                    </span>
                   </div>
                   <div className="flex gap-1.5">
-                    {hasError && <span className="rounded bg-rose-950/50 border border-rose-900/40 px-1.5 py-0.5 text-[9px] text-rose-400 font-bold">ERROR</span>}
-                    {hasWarning && <span className="rounded bg-amber-950/50 border border-amber-900/40 px-1.5 py-0.5 text-[9px] text-amber-400 font-bold">WARN</span>}
-                    {!hasError && !hasWarning && <span className="rounded bg-emerald-950/30 border border-emerald-900/20 px-1.5 py-0.5 text-[9px] text-emerald-400 font-bold">PASS</span>}
+                    {hasError && (
+                      <span className="rounded bg-rose-950/50 border border-rose-900/40 px-1.5 py-0.5 text-[9px] text-rose-400 font-bold">
+                        ERROR
+                      </span>
+                    )}
+                    {hasWarning && (
+                      <span className="rounded bg-amber-950/50 border border-amber-900/40 px-1.5 py-0.5 text-[9px] text-amber-400 font-bold">
+                        WARN
+                      </span>
+                    )}
+                    {!hasError && !hasWarning && (
+                      <span className="rounded bg-emerald-950/30 border border-emerald-900/20 px-1.5 py-0.5 text-[9px] text-emerald-400 font-bold">
+                        PASS
+                      </span>
+                    )}
                   </div>
                 </button>
 
@@ -232,13 +271,19 @@ export const TerminalLogs: React.FC<TerminalLogsProps> = ({ runId, logs, onStart
                             isError
                               ? 'bg-rose-950/15 text-rose-400 border-l-2 border-rose-500'
                               : isWarning
-                              ? 'bg-amber-950/15 text-amber-400 border-l-2 border-amber-500'
-                              : 'text-slate-400 hover:bg-slate-900/40'
+                                ? 'bg-amber-950/15 text-amber-400 border-l-2 border-amber-500'
+                                : 'text-slate-400 hover:bg-slate-900/40'
                           }`}
                         >
-                          <span className="w-10 text-right select-none text-slate-600 pr-1">{line.lineNumber}</span>
-                          <span className="w-24 select-none text-slate-600 truncate">{new Date(line.timestamp).toLocaleTimeString()}</span>
-                          <span className="flex-1 whitespace-pre-wrap leading-relaxed">{line.message}</span>
+                          <span className="w-10 text-right select-none text-slate-600 pr-1">
+                            {line.lineNumber}
+                          </span>
+                          <span className="w-24 select-none text-slate-600 truncate">
+                            {new Date(line.timestamp).toLocaleTimeString()}
+                          </span>
+                          <span className="flex-1 whitespace-pre-wrap leading-relaxed">
+                            {line.message}
+                          </span>
                         </div>
                       );
                     })}
@@ -255,8 +300,12 @@ export const TerminalLogs: React.FC<TerminalLogsProps> = ({ runId, logs, onStart
         <div className="rounded-xl border border-dashed border-primary/40 bg-primary/5 p-8 text-center animate-pulse">
           <div className="flex flex-col items-center justify-center gap-3">
             <Brain className="h-8 w-8 text-primary animate-spin-slow" />
-            <div className="text-sm font-semibold text-slate-700 dark:text-slate-300">Analyzing workflow logs...</div>
-            <div className="text-xs text-slate-400 dark:text-slate-500">Retrieving previous failures, discussions, and wiki context</div>
+            <div className="text-sm font-semibold text-slate-700 dark:text-slate-300">
+              Analyzing workflow logs...
+            </div>
+            <div className="text-xs text-slate-400 dark:text-slate-500">
+              Retrieving previous failures, discussions, and wiki context
+            </div>
             <div className="w-24 mt-2 flex justify-center">
               <div className="dot-typing" />
             </div>
@@ -273,8 +322,12 @@ export const TerminalLogs: React.FC<TerminalLogsProps> = ({ runId, logs, onStart
                 <Brain className="h-5 w-5" />
               </div>
               <div>
-                <h3 className="text-base font-bold text-slate-950 dark:text-white">AI Failure Analysis</h3>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Resolved using repository context</p>
+                <h3 className="text-base font-bold text-slate-950 dark:text-white">
+                  AI Failure Analysis
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                  Resolved using repository context
+                </p>
               </div>
             </div>
             <div className="rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary dark:bg-primary/20">
@@ -285,25 +338,39 @@ export const TerminalLogs: React.FC<TerminalLogsProps> = ({ runId, logs, onStart
           <div className="mt-5 grid grid-cols-1 md:grid-cols-2 gap-6">
             <div className="space-y-4">
               <div>
-                <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">What Happened</span>
-                <p className="mt-1 text-sm text-slate-700 dark:text-slate-300 leading-relaxed">{analysisResult.summary}</p>
+                <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
+                  What Happened
+                </span>
+                <p className="mt-1 text-sm text-slate-700 dark:text-slate-300 leading-relaxed">
+                  {analysisResult.summary}
+                </p>
               </div>
-              
+
               <div>
-                <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Why It Happened</span>
-                <p className="mt-1 text-sm text-slate-700 dark:text-slate-300 leading-relaxed">{analysisResult.rootCause}</p>
+                <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
+                  Why It Happened
+                </span>
+                <p className="mt-1 text-sm text-slate-700 dark:text-slate-300 leading-relaxed">
+                  {analysisResult.rootCause}
+                </p>
               </div>
             </div>
 
             <div className="space-y-4">
               <div className="rounded-lg border border-primary/20 bg-primary/10 p-4 dark:border-primary/30 dark:bg-primary/10">
-                <span className="text-[10px] font-bold text-primary dark:text-primary-hover uppercase tracking-wider">Suggested Fix</span>
-                <p className="mt-1.5 text-sm font-semibold text-slate-800 dark:text-slate-100">{analysisResult.suggestedFix}</p>
+                <span className="text-[10px] font-bold text-primary dark:text-primary-hover uppercase tracking-wider">
+                  Suggested Fix
+                </span>
+                <p className="mt-1.5 text-sm font-semibold text-slate-800 dark:text-slate-100">
+                  {analysisResult.suggestedFix}
+                </p>
               </div>
 
               {analysisResult.similarPreviousRunNumber && (
                 <div className="rounded-lg border border-slate-200 bg-white p-3.5 dark:border-slate-800 dark:bg-slate-900/60">
-                  <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Similar Previous Failure</span>
+                  <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
+                    Similar Previous Failure
+                  </span>
                   <div className="mt-1 flex items-center justify-between text-xs text-slate-700 dark:text-slate-300">
                     <span>Workflow run #{analysisResult.similarPreviousRunNumber}</span>
                     <span className="font-semibold text-rose-500">Failed</span>
@@ -332,7 +399,7 @@ export const TerminalLogs: React.FC<TerminalLogsProps> = ({ runId, logs, onStart
                 </a>
               ))}
             </div>
-            
+
             <div className="flex gap-2">
               {onStartDiscussion && (
                 <button

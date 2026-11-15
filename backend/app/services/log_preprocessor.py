@@ -41,9 +41,21 @@ def get_default_keywords() -> list[str]:
     if raw:
         return [k.strip().lower() for k in raw.split(",") if k.strip()]
     return [
-        "fatal", "fail", "failed", "panic", "error", "exit", "kill",
-        "no such file", "missing", "exception", "cannot", "traceback",
-        "npm err", "exit code", "exit status",
+        "fatal",
+        "fail",
+        "failed",
+        "panic",
+        "error",
+        "exit",
+        "kill",
+        "no such file",
+        "missing",
+        "exception",
+        "cannot",
+        "traceback",
+        "npm err",
+        "exit code",
+        "exit status",
     ]
 
 
@@ -82,7 +94,17 @@ def filter_candidate_lines(
         # Check if line appears identically in successful runs (stable boilerplate)
         if normalized in successful_templates:
             # Demote boilerplates unless it has an explicit high-severity crash keyword
-            if not any(crit in lowered for crit in ("fatal", "panic", "exit code 1", "exit status 1", "syntaxerror", "modulenotfound")):
+            if not any(
+                crit in lowered
+                for crit in (
+                    "fatal",
+                    "panic",
+                    "exit code 1",
+                    "exit status 1",
+                    "syntaxerror",
+                    "modulenotfound",
+                )
+            ):
                 continue
 
         reasons = [f"keyword:{kw}" for kw in matched_keywords]
@@ -97,11 +119,23 @@ def filter_candidate_lines(
             base_score += 0.8
 
         # Explicit exception / stack trace indicators
-        if any(marker in lowered for marker in ("syntaxerror", "typeerror", "referenceerror", "assertionerror", "modulenotfound", "cannot find module")):
+        if any(
+            marker in lowered
+            for marker in (
+                "syntaxerror",
+                "typeerror",
+                "referenceerror",
+                "assertionerror",
+                "modulenotfound",
+                "cannot find module",
+            )
+        ):
             base_score += 2.5
             reasons.append("explicit_exception")
 
-        if any(marker in lowered for marker in ("at ", "line ", "traceback (most recent call last)")):
+        if any(
+            marker in lowered for marker in ("at ", "line ", "traceback (most recent call last)")
+        ):
             base_score += 1.0
             reasons.append("stack_trace_trace")
 
@@ -114,14 +148,16 @@ def filter_candidate_lines(
             base_score += 1.0
             reasons.append("diff_from_successful")
 
-        candidates.append({
-            "line_index": idx,
-            "line_number": line_num,
-            "raw_line": raw_line,
-            "normalized_line": normalized,
-            "score": base_score,
-            "reasons": reasons,
-        })
+        candidates.append(
+            {
+                "line_index": idx,
+                "line_number": line_num,
+                "raw_line": raw_line,
+                "normalized_line": normalized,
+                "score": base_score,
+                "reasons": reasons,
+            }
+        )
 
     return candidates
 
@@ -140,8 +176,12 @@ def expand_blocks(
     - CONTEXT_AFTER (default 6) lines after
     Merges overlapping blocks while preserving original 1-indexed line numbers.
     """
-    before = context_before if context_before is not None else getattr(settings, "RCA_CONTEXT_BEFORE", 4)
-    after = context_after if context_after is not None else getattr(settings, "RCA_CONTEXT_AFTER", 6)
+    before = (
+        context_before if context_before is not None else getattr(settings, "RCA_CONTEXT_BEFORE", 4)
+    )
+    after = (
+        context_after if context_after is not None else getattr(settings, "RCA_CONTEXT_AFTER", 6)
+    )
     total_lines = len(raw_lines)
 
     if not candidates:
@@ -153,13 +193,15 @@ def expand_blocks(
         c_idx = cand["line_index"]
         start_idx = max(0, c_idx - before)
         end_idx = min(total_lines - 1, c_idx + after)
-        intervals.append({
-            "start": start_idx,
-            "end": end_idx,
-            "candidate_indices": {c_idx},
-            "scores": [cand["score"]],
-            "reasons": set(cand["reasons"]),
-        })
+        intervals.append(
+            {
+                "start": start_idx,
+                "end": end_idx,
+                "candidate_indices": {c_idx},
+                "scores": [cand["score"]],
+                "reasons": set(cand["reasons"]),
+            }
+        )
 
     # Sort intervals by start index
     intervals.sort(key=lambda x: x["start"])
@@ -187,26 +229,32 @@ def expand_blocks(
         end_idx = m["end"]
         block_lines = []
         for l_idx in range(start_idx, end_idx + 1):
-            block_lines.append({
-                "line_number": l_idx + 1,
-                "text": raw_lines[l_idx],
-                "is_candidate": l_idx in m["candidate_indices"],
-            })
+            block_lines.append(
+                {
+                    "line_number": l_idx + 1,
+                    "text": raw_lines[l_idx],
+                    "is_candidate": l_idx in m["candidate_indices"],
+                }
+            )
 
         importance_score = sum(m["scores"]) / len(m["scores"]) + (len(m["candidate_indices"]) * 0.5)
 
         # Render clean text representation with line numbers
-        formatted_text = "\n".join(f"{item['line_number']:5d} | {item['text']}" for item in block_lines)
+        formatted_text = "\n".join(
+            f"{item['line_number']:5d} | {item['text']}" for item in block_lines
+        )
 
-        blocks.append({
-            "start_line": start_idx + 1,
-            "end_line": end_idx + 1,
-            "lines": block_lines,
-            "text": formatted_text,
-            "importance_score": round(importance_score, 2),
-            "reasons": sorted(list(m["reasons"])),
-            "line_count": len(block_lines),
-        })
+        blocks.append(
+            {
+                "start_line": start_idx + 1,
+                "end_line": end_idx + 1,
+                "lines": block_lines,
+                "text": formatted_text,
+                "importance_score": round(importance_score, 2),
+                "reasons": sorted(list(m["reasons"])),
+                "line_count": len(block_lines),
+            }
+        )
 
     return blocks
 
@@ -220,9 +268,9 @@ def prune_blocks(
     Ranks blocks by importance density and preserves highest-value blocks
     within the configured budget. Restores chronological ordering.
     """
-    budget = max_tokens or getattr(settings, "RCA_MAX_TOKENS", 4000)
+    budget = max_tokens if max_tokens is not None else getattr(settings, "RCA_MAX_TOKENS", 4000)
     # Approximation: ~3.5 characters per token in code/log text
-    max_chars = budget * 3.5
+    max_chars = max(0, int(budget * 3.5))
 
     if not blocks:
         return []
@@ -235,12 +283,34 @@ def prune_blocks(
 
     for block in ranked:
         block_char_len = len(block["text"])
-        if accumulated_chars + block_char_len <= max_chars or not selected:
+        if accumulated_chars + block_char_len <= max_chars:
             selected.append(block)
             accumulated_chars += block_char_len
-        else:
-            # Stop if adding more exceeds budget and we already have high-value blocks
-            break
+        elif not selected:
+            # Keep source line numbers while fitting even a single dense error block.
+            remaining = max_chars
+            kept = []
+            priority = sorted(block["lines"], key=lambda line: not line.get("is_candidate", False))
+            for line in priority:
+                rendered = f"{line['line_number']:5d} | {line['text']}"
+                if len(rendered) + 1 <= remaining:
+                    kept.append(line)
+                    remaining -= len(rendered) + 1
+            if kept:
+                kept.sort(key=lambda line: line["line_number"])
+                selected.append(
+                    {
+                        **block,
+                        "lines": kept,
+                        "line_count": len(kept),
+                        "start_line": kept[0]["line_number"],
+                        "end_line": kept[-1]["line_number"],
+                        "text": "\n".join(
+                            f"{line['line_number']:5d} | {line['text']}" for line in kept
+                        ),
+                    }
+                )
+                accumulated_chars = max_chars - remaining
 
     # Restore chronological ordering for coherent prompt presentation
     selected.sort(key=lambda b: b["start_line"])
@@ -277,7 +347,9 @@ def preprocess_logs(
             continue
         if line_index in existing_indices:
             existing = next(item for item in candidates if item["line_index"] == line_index)
-            existing["reasons"] = sorted(set(existing["reasons"]) | set(candidate.get("reasons", [])))
+            existing["reasons"] = sorted(
+                set(existing["reasons"]) | set(candidate.get("reasons", []))
+            )
             existing["score"] = max(existing["score"], float(candidate.get("score", 1.0)))
             continue
         candidates.append(
@@ -297,14 +369,16 @@ def preprocess_logs(
         tail_start = max(0, len(raw_lines) - 25)
         for idx in range(tail_start, len(raw_lines)):
             if raw_lines[idx].strip():
-                candidates.append({
-                    "line_index": idx,
-                    "line_number": idx + 1,
-                    "raw_line": raw_lines[idx],
-                    "normalized_line": normalize_line(raw_lines[idx]),
-                    "score": 1.0,
-                    "reasons": ["log_tail_fallback"],
-                })
+                candidates.append(
+                    {
+                        "line_index": idx,
+                        "line_number": idx + 1,
+                        "raw_line": raw_lines[idx],
+                        "normalized_line": normalize_line(raw_lines[idx]),
+                        "score": 1.0,
+                        "reasons": ["log_tail_fallback"],
+                    }
+                )
 
     blocks = expand_blocks(
         candidates=candidates,

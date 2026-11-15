@@ -1,91 +1,48 @@
-import { FailureAnalysis, AIMessage, WorkflowRun } from '../types';
+import axios from 'axios';
+import { AIMessage, FailureAnalysis, WorkflowRun } from '../types';
 import apiClient from './apiClient';
 
 export const aiService = {
-  async analyzeFailure(runId: string, runData?: WorkflowRun, repoName?: string): Promise<FailureAnalysis | null> {
-    const targetRepo = repoName || 'repository';
+  async getSavedAnalysis(runId: string, repoId: string): Promise<FailureAnalysis | null> {
     try {
-      const response = await apiClient.post<FailureAnalysis>(
-        `/repositories/${encodeURIComponent(targetRepo)}/workflows/${encodeURIComponent(runId)}/analysis`
-      );
-      return response.data;
-    } catch (err) {
-      console.warn('Backend AI analysis endpoint unavailable, using run diagnostic info:', err);
-      if (runData?.diagnosticInfo) {
-        return {
-          id: `diag-${runId}`,
-          runId,
-          title: `Diagnostic Analysis for Run #${runData.runNumber}`,
-          summary: runData.diagnosticInfo.errorSnippet || `Failure in workflow ${runData.name} on branch ${runData.branch}.`,
-          rootCause: runData.diagnosticInfo.rootCause || 'Workflow step failed with non-zero exit code.',
-          suggestedFix: runData.diagnosticInfo.suggestedFix || 'Review step execution logs and test locally.',
-          relevantDocs: [{ title: 'GitHub Actions Documentation', url: 'https://docs.github.com/en/actions' }],
-          previousDiscussions: [],
-        };
-      }
-      return null;
+      return (
+        await apiClient.get<FailureAnalysis>(
+          `/repositories/${encodeURIComponent(repoId)}/workflows/${encodeURIComponent(runId)}/analysis`,
+        )
+      ).data;
+    } catch (error) {
+      if (axios.isAxiosError(error) && error.response?.status === 404) return null;
+      throw error;
     }
   },
-
-  async reanalyzeFailure(runId: string, repoName?: string): Promise<FailureAnalysis | null> {
-    const targetRepo = repoName || 'repository';
-    const response = await apiClient.post<FailureAnalysis>(
-      `/repositories/${encodeURIComponent(targetRepo)}/workflows/${encodeURIComponent(runId)}/analysis?reanalyze=true`
-    );
-    return response.data;
+  async analyzeFailure(
+    runId: string,
+    _runData: WorkflowRun | undefined,
+    repoId: string,
+  ): Promise<FailureAnalysis> {
+    return (
+      await apiClient.post<FailureAnalysis>(
+        `/repositories/${encodeURIComponent(repoId)}/workflows/${encodeURIComponent(runId)}/analysis`,
+      )
+    ).data;
   },
-
+  async reanalyzeFailure(runId: string, repoId: string): Promise<FailureAnalysis> {
+    return (
+      await apiClient.post<FailureAnalysis>(
+        `/repositories/${encodeURIComponent(repoId)}/workflows/${encodeURIComponent(runId)}/analysis`,
+        null,
+        { params: { reanalyze: true } },
+      )
+    ).data;
+  },
   async chatWithAssistant(repoId: string, messages: AIMessage[]): Promise<AIMessage> {
-    try {
-      const response = await apiClient.post<AIMessage>(
-        `/repositories/${encodeURIComponent(repoId)}/ai/chat`,
-        {
-          messages: messages.map((m) => ({
-            id: m.id,
-            role: m.role,
-            content: m.content,
-            timestamp: m.timestamp,
-          })),
-        }
-      );
-      return response.data;
-    } catch (err) {
-      console.warn('Backend AI chat request failed, falling back to local assistant:', err);
-      const lastMsg = messages[messages.length - 1]?.content.toLowerCase() || '';
-      let reply = `I am your FlowForge AI assistant connected to **${repoId}**. Ask me about workflow failure diagnostics, repository architecture, or collaborators.`;
-      const sources: string[] = [`Repository: ${repoId}`];
-
-      if (lastMsg.includes('fail') || lastMsg.includes('error') || lastMsg.includes('why')) {
-        reply = `To inspect failures in **${repoId}**, switch to the **Failure Analysis** tab to view step-by-step logs, or use the **Workflows** tab to trigger a rerun.`;
-        sources.push('GitHub Actions Runs API');
-      } else if (lastMsg.includes('who') || lastMsg.includes('team') || lastMsg.includes('contributor')) {
-        reply = `Active team members and contributors for **${repoId}** are listed in the **Team** tab with recent contribution counts.`;
-        sources.push('GitHub Contributors API');
-      }
-
-      return {
-        id: `ai-${Date.now()}`,
-        role: 'assistant',
-        content: reply,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        sources,
-      };
-    }
+    return (
+      await apiClient.post<AIMessage>(`/repositories/${encodeURIComponent(repoId)}/ai/chat`, {
+        messages: messages.slice(-50),
+      })
+    ).data;
   },
-
-  async generateOnboardingGuide(repoId: string) {
-    return {
-      repoName: repoId,
-      architectureSummary: `Active GitHub workspace for ${repoId} monitored with automated CI/CD intelligence.`,
-      keyDirectories: [
-        { path: '.github/workflows', purpose: 'Automated CI/CD workflows and deployment actions' },
-        { path: 'src/', purpose: 'Core application source code' },
-      ],
-      setupSteps: [
-        { step: 1, title: 'Clone Repository', command: `git clone https://github.com/${repoId}.git` },
-        { step: 2, title: 'Install Dependencies', command: 'npm install' },
-        { step: 3, title: 'Start Development Server', command: 'npm run dev' },
-      ],
-    };
-  }
+  async generateOnboardingGuide(_repoId: string): Promise<never> {
+    throw new Error('Repository onboarding guides are not available yet.');
+  },
 };

@@ -1,4 +1,8 @@
 import asyncio
+import hashlib
+from typing import Literal
+from app.services.locks import keyed_lock
+from app.routers.workflows import load_workflow_logs
 from datetime import datetime
 import json
 import logging
@@ -10,8 +14,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.services.identity import find_repository
 from app.config import settings
-from app.db.database import get_db
+from app.db.database import get_db, isolated_db
 from app.db.models import FailureLog, Repository, User, WorkflowRun
 from app.routers.auth import get_current_user
 
@@ -22,13 +27,13 @@ router = APIRouter(prefix="/repositories/{repo_id}", tags=["ai"])
 
 class ChatMessage(BaseModel):
     id: Optional[str] = None
-    role: str = Field(..., description="'user' or 'assistant'")
-    content: str
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=20000)
     timestamp: Optional[str] = None
 
 
 class ChatRequest(BaseModel):
-    messages: list[ChatMessage]
+    messages: list[ChatMessage] = Field(min_length=1, max_length=50)
     run_id: Optional[str] = None
 
 
@@ -45,7 +50,9 @@ def _cached_analysis_response(failure: FailureLog) -> dict | None:
 
 
 def _is_final_provider_result(result: dict | None) -> bool:
-    return bool(result and result.get("status") in {"completed", "fallback"})
+    return bool(
+        result and result.get("status") in {"completed", "fallback", "failed", "unavailable"}
+    )
 
 
 def _primary_result_from_cache(cached: dict) -> dict:
@@ -61,12 +68,16 @@ def _primary_result_from_cache(cached: dict) -> dict:
 
 async def _generate_gemini_response(prompt: str) -> str:
     from google import genai
-    client = genai.Client(api_key=settings.GEMINI_API_KEY)
-    response = await asyncio.to_thread(
-        client.models.generate_content,
-        model=settings.GEMINI_MODEL,
-        contents=prompt,
+
+    client = genai.Client(
+        api_key=settings.GEMINI_API_KEY,
+        http_options={"timeout": settings.AI_TIMEOUT_SECONDS * 1000},
     )
+    async with client.aio as async_client:
+        response = await asyncio.wait_for(
+            async_client.models.generate_content(model=settings.GEMINI_MODEL, contents=prompt),
+            timeout=settings.AI_TIMEOUT_SECONDS,
+        )
     return response.text or ""
 
 
@@ -78,32 +89,64 @@ def _parse_result(text: str) -> dict:
     try:
         result = json.loads(candidate)
     except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=502, detail="AI diagnostic engine returned an invalid response format") from exc
+        raise HTTPException(
+            status_code=502, detail="AI diagnostic engine returned an invalid response format"
+        ) from exc
     required = ("summary", "rootCause", "suggestedFix", "confidence")
     if any(not result.get(field) for field in required):
-        raise HTTPException(status_code=502, detail="AI diagnostic engine returned an incomplete response")
+        raise HTTPException(
+            status_code=502, detail="AI diagnostic engine returned an incomplete response"
+        )
     return result
 
 
 def _find_repo(repo_id: str, user_id: int, db: Session) -> Repository | None:
-    repo_filter = (Repository.user_id == user_id) & (
-        (Repository.github_repo_id == repo_id) | (Repository.name == repo_id)
+    return find_repository(repo_id, user_id, db)
+
+
+@router.get("/workflows/{run_id}/analysis")
+@isolated_db
+def saved_analysis(
+    repo_id: str, run_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)
+) -> dict:
+    repository = _find_repo(repo_id, user.id, db)
+    run = (
+        db.query(WorkflowRun)
+        .filter_by(repository_id=repository.id, github_run_id=run_id)
+        .one_or_none()
+        if repository
+        else None
     )
-    if repo_id.isdigit():
-        repo_filter = (Repository.user_id == user_id) & (
-            (Repository.github_repo_id == repo_id) | (Repository.name == repo_id) | (Repository.id == int(repo_id))
-        )
-    return db.query(Repository).filter(repo_filter).one_or_none()
+    if run:
+        for failure in (
+            db.query(FailureLog)
+            .filter_by(workflow_run_id=run.id, run_attempt=run.run_attempt)
+            .order_by(FailureLog.id.desc())
+        ):
+            result = _cached_analysis_response(failure)
+            if result:
+                return result
+    raise HTTPException(404, "No saved analysis is available")
 
 
 @router.post("/workflows/{run_id}/analysis")
-async def analyze_failure(
+@isolated_db
+def analyze_failure(
     repo_id: str,
     run_id: str,
     reanalyze: bool = False,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
+    repository = _find_repo(repo_id, user.id, db)
+    if not repository:
+        raise HTTPException(404, "Repository not found")
+    with keyed_lock(("analysis", user.id, repository.id, run_id)):
+        db.expire_all()
+        return asyncio.run(_analyze_failure(repo_id, run_id, reanalyze, user, db))
+
+
+async def _analyze_failure(repo_id, run_id, reanalyze, user, db):
     from app.services.failure_extractor import (
         extract_structured_failure,
         generate_failure_fingerprint,
@@ -125,62 +168,51 @@ async def analyze_failure(
     if not repository:
         raise HTTPException(status_code=404, detail="Repository not found")
 
-    run_filter = (WorkflowRun.repository_id == repository.id) & (WorkflowRun.github_run_id == str(run_id))
-    if str(run_id).isdigit():
-        run_filter = (WorkflowRun.repository_id == repository.id) & (
-            (WorkflowRun.github_run_id == str(run_id)) | (WorkflowRun.id == int(run_id))
-        )
-    workflow_run = db.query(WorkflowRun).filter(run_filter).one_or_none()
-
-    if not workflow_run:
-        raise HTTPException(status_code=404, detail="Workflow run not found")
-
-    failures = db.query(FailureLog).filter(FailureLog.workflow_run_id == workflow_run.id).all()
-    existing_cached_response = next(
-        (cached for failure in failures if (cached := _cached_analysis_response(failure))),
-        None,
+    # Server-side sequencing also protects direct API callers, not just the UI.
+    load_workflow_logs(repo_id, run_id, user, db)
+    workflow_run = (
+        db.query(WorkflowRun)
+        .filter_by(repository_id=repository.id, github_run_id=str(run_id))
+        .one()
     )
-    cached_providers = (existing_cached_response or {}).get("providers", {})
-    stored_failure = failures[0] if failures else None
-    for provider_name, attribute_name in (("gemini", "gemini_result"), ("groq", "groq_result")):
-        stored_result = getattr(stored_failure, attribute_name, None) if stored_failure else None
-        if stored_result:
-            try:
-                cached_providers[provider_name] = json.loads(stored_result)
-            except json.JSONDecodeError:
-                logger.warning("Ignoring malformed saved %s result for run %s", provider_name, run_id)
-
-    if reanalyze and failures:
+    if workflow_run.conclusion not in {
+        "failure",
+        "timed_out",
+        "action_required",
+        "startup_failure",
+    }:
+        raise HTTPException(409, "This run has no completed failure to analyze")
+    failures = (
+        db.query(FailureLog)
+        .filter_by(workflow_run_id=workflow_run.id, run_attempt=workflow_run.run_attempt)
+        .filter(FailureLog.github_job_id.isnot(None))
+        .order_by(FailureLog.id)
+        .all()
+    )
+    source = {
+        "logs": [(f.github_job_id, f.raw_logs) for f in failures],
+        "attempt": workflow_run.run_attempt,
+        "prompt": PROMPT_VERSION,
+        "gemini": [bool(settings.GEMINI_API_KEY), settings.GEMINI_MODEL],
+        "groq": [bool(settings.GROQ_API_KEY), settings.GROQ_MODEL],
+        "budget": settings.RCA_MAX_TOKENS,
+        "context": [settings.RCA_CONTEXT_BEFORE, settings.RCA_CONTEXT_AFTER],
+    }
+    source["pipeline"] = {
+        name: value for name, value in settings.model_dump().items() if name.startswith("RCA_")
+    }
+    cache_key = hashlib.sha256(json.dumps(source, sort_keys=True).encode()).hexdigest()
+    if not reanalyze:
         for failure in failures:
-            failure.analysis_result = None
-            failure.provider_results = None
-            failure.gemini_result = None
-            failure.groq_result = None
-        db.commit()
-        existing_cached_response = None
-        cached_providers = {}
-
-    gemini_cached = cached_providers.get("gemini")
-    if not gemini_cached and existing_cached_response:
-        gemini_cached = {
-            "provider": "Gemini",
-            "status": existing_cached_response.get("analysisStatus", "completed"),
-            "model": existing_cached_response.get("model"),
-            "summary": existing_cached_response.get("summary", ""),
-            "rootCause": existing_cached_response.get("rootCause", ""),
-            "suggestedFix": existing_cached_response.get("suggestedFix", ""),
-            "confidence": existing_cached_response.get("confidence"),
-            "evidence": existing_cached_response.get("evidence", []),
-            "logAnalysis": existing_cached_response.get("logAnalysis", []),
-        }
-    groq_cached = cached_providers.get("groq")
-    gemini_needs_run = not _is_final_provider_result(gemini_cached)
-    groq_needs_run = not _is_final_provider_result(groq_cached)
-
-    if not gemini_needs_run and not groq_needs_run and existing_cached_response:
-        cached_response = dict(existing_cached_response)
-        cached_response["providers"] = cached_providers
-        return cached_response
+            cached = (
+                _cached_analysis_response(failure)
+                if failure.analysis_cache_key == cache_key
+                else None
+            )
+            if cached:
+                return cached
+    gemini_needs_run = groq_needs_run = True
+    gemini_cached = groq_cached = None
 
     # Step 1: Collect & preserve complete raw logs
     raw_logs_parts = []
@@ -190,7 +222,7 @@ async def analyze_failure(
             raw_logs_parts.append(f.raw_logs)
         elif f.error_snippet:
             raw_logs_parts.append(f.error_snippet)
-        if f.step_name and not failed_step_name:
+        if f.step_name and f.exit_code != 0 and not failed_step_name:
             failed_step_name = f.step_name
 
     # Check workflow run steps if no failed step identified yet
@@ -203,13 +235,17 @@ async def analyze_failure(
     if not failed_step_name:
         failed_step_name = "build"
 
-    combined_raw_logs = "\n\n".join(raw_logs_parts).strip()
+    combined_raw_logs = "\n".join(raw_logs_parts).strip()
+    if not combined_raw_logs:
+        raise HTTPException(409, "No diagnostic logs are available yet")
     if not combined_raw_logs and workflow_run.steps:
         step_details = "\n".join(
             f"Step {s.step_number}: {s.name} - Status: {s.status}, Conclusion: {s.conclusion or 'unknown'}"
             for s in workflow_run.steps
         )
-        combined_raw_logs = f"Workflow '{workflow_run.workflow_name}' failed.\nExecuted Steps:\n{step_details}"
+        combined_raw_logs = (
+            f"Workflow '{workflow_run.workflow_name}' failed.\nExecuted Steps:\n{step_details}"
+        )
 
     raw_lines = combined_raw_logs.splitlines() if combined_raw_logs else []
 
@@ -290,9 +326,7 @@ async def analyze_failure(
     # Step 7: Embed the current failure and retrieve RAG context from pgvector.
     # Retrieval is optional: an embedding/database outage must not prevent the
     # current failure from reaching Gemini or the deterministic RCA fallback.
-    critical_log_text = "\n".join(
-        block.get("text", "") for block in important_blocks
-    )[:6000]
+    critical_log_text = "\n".join(block.get("text", "") for block in important_blocks)[:6000]
     vector_query = "\n".join(
         part
         for part in (
@@ -334,16 +368,9 @@ async def analyze_failure(
         "historical_precedents": similar_runs,
         "evidence_graph": evidence_graph,
     }
-    rca_result = await run_rca(**common_rca_args) if gemini_needs_run else _primary_result_from_cache(gemini_cached)
-    groq_result = await run_groq_rca(**common_rca_args) if groq_needs_run else {
-        "analysis_status": groq_cached.get("status", "completed"),
-        "model": groq_cached.get("model"),
-        "root_cause": [groq_cached.get("rootCause", "")],
-        "suggested_fix": groq_cached.get("suggestedFix", ""),
-        "confidence": groq_cached.get("confidence"),
-        "evidence": groq_cached.get("evidence", []),
-        "log_analysis": groq_cached.get("logAnalysis", []),
-    }
+    rca_result, groq_result = await asyncio.gather(
+        run_rca(**common_rca_args), run_groq_rca(**common_rca_args)
+    )
 
     # Step 9: Persistence to Database
     root_cause_str = (
@@ -399,7 +426,10 @@ async def analyze_failure(
         "similarMatchPercent": similar_match["similarityPercent"] if similar_match else None,
         "relevantDocs": [
             {"title": "GitHub Actions Documentation", "url": "https://docs.github.com/en/actions"},
-            {"title": "Workflow Syntax Reference", "url": "https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions"},
+            {
+                "title": "Workflow Syntax Reference",
+                "url": "https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions",
+            },
         ],
         "previousDiscussions": [],
         "providers": providers,
@@ -407,7 +437,11 @@ async def analyze_failure(
     analysis_result_json = json.dumps(analysis_response, separators=(",", ":"))
 
     if failures:
+        anchor = next((f for f in failures if f.exit_code != 0), failures[0])
         for failure in failures:
+            if failure is not anchor:
+                continue
+            failure.analysis_cache_key = cache_key
             failure.root_cause = root_cause_str
             failure.suggested_fix = rca_result.get("suggested_fix", "")
             failure.ai_confidence = confidence_val
@@ -458,6 +492,7 @@ async def analyze_failure(
             root_cause=root_cause_str,
             suggested_fix=rca_result.get("suggested_fix", ""),
             exit_code=structured.get("exit_code", 1),
+            run_attempt=workflow_run.run_attempt,
         )
     except Exception as idx_err:
         logger.warning("Error indexing failure to vector store: %s", idx_err)
@@ -467,6 +502,7 @@ async def analyze_failure(
 
 @router.post("/ai/chat")
 @router.post("/chat")
+@isolated_db
 async def chat_with_assistant(
     repo_id: str,
     payload: ChatRequest,
@@ -488,29 +524,44 @@ async def chat_with_assistant(
     failed_runs = [r for r in recent_runs if r.status == "failed" or r.conclusion == "failure"]
     latest_run = recent_runs[0] if recent_runs else None
 
-    last_user_message = next((m.content for m in reversed(payload.messages) if m.role == "user"), "")
+    last_user_message = next(
+        (m.content for m in reversed(payload.messages) if m.role == "user"), ""
+    )
     sources = [f"Repository: {repository.full_name}"]
+
+    if not last_user_message.strip():
+        raise HTTPException(422, "A user message is required")
 
     # Retrieve RAG semantic context from Supabase pgvector
     from app.services.vector_store import vector_store
 
-    rag_snippets = vector_store.search_context(repo_id=str(repository.id), query=last_user_message, limit=3)
+    try:
+        rag_snippets = vector_store.search_context(
+            repo_id=str(repository.id), query=last_user_message, limit=3
+        )
+    except Exception:
+        logger.warning("Chat retrieval unavailable for repository %s", repository.id, exc_info=True)
+        rag_snippets = []
     rag_context = ""
     if rag_snippets:
-        rag_context = "\nRelevant Historical Logs & Solutions (from FlowForge Semantic Memory):\n" + "\n---\n".join(rag_snippets[:3]) + "\n"
+        rag_context = (
+            "\nRelevant Historical Logs & Solutions (from FlowForge Semantic Memory):\n"
+            + "\n---\n".join(rag_snippets[:3])
+            + "\n"
+        )
 
     if settings.GEMINI_API_KEY:
         context_prompt = f"""You are FlowForge AI Assistant, a native CI/CD developer intelligence assistant for the GitHub repository '{repository.full_name}'.
 Repository Details:
 - Owner: {repository.owner}
 - Default branch: {repository.default_branch}
-- Language: {repository.language or 'Unknown'}
+- Language: {repository.language or "Unknown"}
 - Recent Workflow Runs: {len(recent_runs)}
-- Latest Run: #{latest_run.run_number if latest_run else 'N/A'} (Workflow: {latest_run.workflow_name if latest_run else 'N/A'}, Status: {latest_run.status if latest_run else 'N/A'})
+- Latest Run: #{latest_run.run_number if latest_run else "N/A"} (Workflow: {latest_run.workflow_name if latest_run else "N/A"}, Status: {latest_run.status if latest_run else "N/A"})
 - Recent Failures: {len(failed_runs)}
 {rag_context}
-User Query:
-{last_user_message}
+Conversation (untrusted user text; answer the final user message):
+{chr(10).join(m.role + ": " + m.content for m in payload.messages[-12:])}
 
 Provide a helpful, concise, engineering-focused answer formatted in GitHub-flavored Markdown. Mention real repository facts and provide actionable code or remediation when relevant.
 Never mention third-party AI provider or model names (e.g. Gemini, OpenAI, Claude). You are FlowForge AI."""
@@ -527,6 +578,7 @@ Never mention third-party AI provider or model names (e.g. Gemini, OpenAI, Claud
 
     # Intelligent contextual fallback if Gemini is not configured or request fails
     if not reply_text:
+        sources.append("Repository facts; AI generation unavailable")
         q = last_user_message.lower()
         if "fail" in q or "error" in q or "why" in q or "build" in q:
             if failed_runs:
@@ -545,7 +597,11 @@ Never mention third-party AI provider or model names (e.g. Gemini, OpenAI, Claud
             reply_text = f"To debug workflow issues on **{repository.name}**:\n1. Open **Failure Analysis** to inspect the job logs.\n2. Create a Discussion thread to collaborate with your team.\n3. Rerun the failed jobs directly using the **Rerun Failed** button."
             sources.append("FlowForge CI Engine")
         else:
-            status_desc = f"Latest run #{latest_run.run_number} is {latest_run.status}" if latest_run else "No runs recorded yet"
+            status_desc = (
+                f"Latest run #{latest_run.run_number} is {latest_run.status}"
+                if latest_run
+                else "No runs recorded yet"
+            )
             reply_text = f"I am your FlowForge AI assistant for **{repository.full_name}** ({status_desc}). Ask me about workflow failures, build status on branch `{repository.default_branch}`, or collaborators."
 
     return {

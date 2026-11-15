@@ -1,7 +1,7 @@
+import { motion } from 'framer-motion';
+import { ArrowUpRight, Code, Globe, Lock } from 'lucide-react';
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { motion } from 'framer-motion';
-import { GitCommit, Lock, Globe, ArrowUpRight, Users, Code } from 'lucide-react';
 import { Repository } from '../types';
 import { StatusBadge } from './StatusBadge';
 
@@ -16,7 +16,7 @@ export const RepoCard: React.FC<RepoCardProps> = ({ repo }) => {
     <motion.div
       whileHover={{ y: -4, scale: 1.01 }}
       transition={{ duration: 0.2 }}
-      onClick={() => navigate(`/repositories/${encodeURIComponent(repo.name)}`)}
+      onClick={() => navigate(`/repositories/${encodeURIComponent(repo.id)}`)}
       className="group relative cursor-pointer rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0E121D] p-5 shadow-sm hover:border-purple-500/50 dark:hover:border-purple-500/50 hover:shadow-md transition-all flex flex-col justify-between"
     >
       {/* Top Header */}
@@ -63,7 +63,9 @@ export const RepoCard: React.FC<RepoCardProps> = ({ repo }) => {
       {/* Footer: Details + Open Workspace */}
       <div className="mt-5 pt-3.5 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between">
         <div className="flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-400 font-mono">
-          <span>{repo.openDiscussionsCount} {repo.openDiscussionsCount === 1 ? 'issue' : 'issues'}</span>
+          <span>
+            {repo.openDiscussionsCount} {repo.openDiscussionsCount === 1 ? 'issue' : 'issues'}
+          </span>
         </div>
 
         <div className="flex items-center gap-1 text-xs font-bold text-purple-600 dark:text-purple-400 group-hover:translate-x-0.5 transition-transform">

@@ -1,109 +1,84 @@
+"""Database construction is local; only lifespan startup checks connectivity."""
 
-import logging
-from sqlalchemy import create_engine, inspect, text
+import asyncio
+from functools import wraps
+from inspect import iscoroutinefunction, signature
+
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import declarative_base, sessionmaker
+from starlette.concurrency import run_in_threadpool
+
 from app.config import settings
 
-logger = logging.getLogger(__name__)
 
 def _build_engine():
-    db_url = settings.DATABASE_URL
-    if db_url.startswith("postgres://"):
-        db_url = db_url.replace("postgres://", "postgresql://", 1)
-    if db_url.startswith("postgresql://"):
-        db_url = db_url.replace("postgresql://", "postgresql+psycopg2://", 1)
-    if not db_url.startswith("postgresql+"):
-        raise RuntimeError("DATABASE_URL must point to the Supabase PostgreSQL database")
+    url = make_url(settings.DATABASE_URL.replace("postgres://", "postgresql://", 1))
+    if url.drivername == "postgresql":
+        url = url.set(drivername="postgresql+psycopg2")
+    if not url.drivername.startswith("postgresql+"):
+        raise RuntimeError("DATABASE_URL must point to PostgreSQL")
+    if url.host not in {"localhost", "127.0.0.1", "::1"}:
+        url = url.update_query_dict({"sslmode": "require"})
+    return create_engine(url, pool_pre_ping=True, connect_args={"connect_timeout": 10})
 
-    db_url = make_url(db_url).update_query_dict({"sslmode": "require"})
-    engine = create_engine(db_url, pool_pre_ping=True)
-    try:
-        with engine.connect() as connection:
-            connection.execute(text("SELECT 1"))
-    except Exception:
-        engine.dispose()
-        logger.exception("Supabase PostgreSQL connection failed")
-        raise RuntimeError("Supabase PostgreSQL is unavailable or DATABASE_URL credentials are invalid")
-    return engine
 
 engine = _build_engine()
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+SessionLocal = sessionmaker(autoflush=False, expire_on_commit=False, bind=engine)
 Base = declarative_base()
 
+
 def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+    with SessionLocal() as db:
+        try:
+            yield db
+        except Exception:
+            db.rollback()
+            raise
+
+
+def isolated_db(function):
+    """Run database endpoints with a thread-owned session.
+
+    Async routes explicitly dispatch to a worker and get a loop inside it.
+    ORM objects never cross threads and synchronous inference/SQL cannot block
+    ASGI's event loop.
+    """
+    function_signature = signature(function)
+    if "db" not in function_signature.parameters:
+        raise TypeError("isolated_db requires a 'db' parameter; omit it for routes without SQL")
+
+    def run_with_session(*args, **kwargs):
+        with SessionLocal() as db:
+            try:
+                kwargs["db"] = db
+                if iscoroutinefunction(function):
+                    return asyncio.run(function(*args, **kwargs))
+                return function(*args, **kwargs)
+            except Exception:
+                db.rollback()
+                raise
+
+    if iscoroutinefunction(function):
+        # Preserve async classification even when FastAPI unwraps the handler.
+        @wraps(function)
+        async def endpoint(*args, **kwargs):
+            return await run_in_threadpool(run_with_session, *args, **kwargs)
+    else:
+        endpoint = wraps(function)(run_with_session)
+
+    endpoint.__signature__ = function_signature.replace(
+        parameters=[p for p in function_signature.parameters.values() if p.name != "db"]
+    )
+    return endpoint
+
 
 def init_db():
-    from app.db import models
-    Base.metadata.create_all(bind=engine)
-    additions = {
-        "discussions": [("github_issue_number", "INTEGER")],
-        "discussion_comments": [("github_comment_id", "VARCHAR(100)")],
-        "failure_logs": [
-            ("failure_fingerprint", "VARCHAR(255)"),
-            ("structured_failure", "TEXT"),
-            ("important_log_blocks", "TEXT"),
-            ("evidence", "TEXT"),
-            ("analysis_status", "VARCHAR(50)"),
-            ("model", "VARCHAR(100)"),
-            ("prompt_version", "VARCHAR(50)"),
-            ("analysis_result", "TEXT"),
-            ("provider_results", "TEXT"),
-            ("gemini_result", "TEXT"),
-            ("groq_result", "TEXT"),
-        ],
-    }
-    with engine.begin() as connection:
-        connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-        connection.execute(text(
-            """
-            CREATE TABLE IF NOT EXISTS vector_documents (
-                id TEXT PRIMARY KEY,
-                collection_name TEXT NOT NULL,
-                document TEXT NOT NULL,
-                metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-                embedding vector(384) NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE (collection_name, id)
-            )
-            """
-        ))
-        connection.execute(text(
-            """
-            CREATE INDEX IF NOT EXISTS vector_documents_collection_idx
-            ON vector_documents (collection_name)
-            """
-        ))
-        connection.execute(text(
-            """
-            CREATE INDEX IF NOT EXISTS vector_documents_embedding_idx
-            ON vector_documents USING hnsw (embedding vector_cosine_ops)
-            """
-        ))
-        for table, columns in additions.items():
-            res = connection.execute(
-                text("SELECT column_name FROM information_schema.columns WHERE table_name = :t"),
-                {"t": table}
-            ).fetchall()
-            existing_columns = {r[0] for r in res}
-            for column_name, column_type in columns:
-                if column_name not in existing_columns:
-                    connection.execute(text(
-                        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column_name} {column_type}"
-                    ))
-        connection.execute(text(
-            """
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_discussion_repository_run
-            ON discussions(repository_id, workflow_run_id)
-            WHERE workflow_run_id IS NOT NULL
-            """
-        ))
-        # Ensure ai_confidence is double precision float
-        connection.execute(text(
-            "ALTER TABLE failure_logs ALTER COLUMN ai_confidence TYPE double precision USING ai_confidence::double precision;"
-        ))
+    """Readiness only. Schema changes require python -m app.db.migrate."""
+    with engine.connect() as connection:
+        connection.execute(text("SELECT 1"))
+        version = connection.execute(
+            text("SELECT version FROM flowforge_schema_versions WHERE version = 2")
+        ).scalar()
+        if version != 2:
+            raise RuntimeError("Database schema is outdated; run python -m app.db.migrate")

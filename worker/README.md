@@ -1,6 +1,3 @@
-# Worker (Celery & Redis)
+# Future background worker
 
-Handles asynchronous tasks:
-- Periodically fetching repository workflows from GitHub.
-- Parsing and chunking log files for vector database embedding.
-- Running heavy AI analysis workflows in the background.
+This directory is a design placeholder. No Celery worker, Redis broker, or scheduler is implemented here. Current synchronization and diagnostics execute in bounded FastAPI worker threads. A durable task queue and cross-process analysis scheduling are future production work.

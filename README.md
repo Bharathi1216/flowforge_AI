@@ -1,87 +1,68 @@
 # FlowForge AI
 
-FlowForge AI is a repository-centric developer collaboration workspace that links with GitHub Actions. It features interactive log viewers, vector RAG search matching, issue discussions, release changelog summarizers, and automated onboarding guides.
+A React and FastAPI workspace for GitHub Actions monitoring, log inspection, failure diagnostics, and GitHub issue discussions. Application data lives in PostgreSQL with pgvector; the browser uses the backend's HTTP-only OAuth session.
 
-## Repository Layout
-- **`frontend/`**: Vite + React + TypeScript + Tailwind CSS client application dashboard.
-- **`backend/`**: FastAPI controller service placeholders.
-- **`ai-service/`**: Gemini model configuration and RAG support.
-- **`database/`**: PostgreSQL relational schemas.
-- **`worker/`**: Celery & Redis task broker queues.
-- **`docker/`**: Multi-container compose manifests.
-- **`github-integration/`**: GitHub webhook hooks handler.
+## Local setup
 
-Runtime application data is stored in Supabase PostgreSQL. PostgreSQL and Supabase scripts are in `database/`, and frontend/backend dependencies are managed by their respective package and requirements files.
+Use Python 3.11 or 3.12 and a Node version supported by the installed Vite release (Node 22.12+ or 24 recommended). Install PostgreSQL with the pgvector extension, or configure Supabase PostgreSQL.
 
----
-
-## Getting Started
-
-To launch both the FastAPI backend and the Vite frontend locally, run this from the repository root in PowerShell:
-
-```powershell
-.\start-dev.ps1
-```
-
-The script starts only services whose ports are not already in use. It opens a separate terminal for each service and keeps them running while you use the app.
-
-To launch the frontend manually, use the following commands:
-
-### 1. Install Dependencies
-Navigate into the `frontend` folder and install all package dependencies:
-```bash
-cd frontend
-npm install
-```
-
-### 2. Run the Development Server
-Launch the local Vite server:
-```bash
-npm run dev
-```
-
-Use Python 3.11 for the backend. The free-threaded Python 3.13t runtime is not compatible with the current crypto stack used by this project. Create and install the backend environment once:
 ```powershell
 cd backend
 py -3.11 -m venv .venv
-.\.venv\Scripts\python -m pip install -r requirements.txt
+.\.venv\Scripts\python -m pip install --upgrade pip setuptools
+.\.venv\Scripts\python -m pip install -r requirements-dev.txt
+Copy-Item .env.example .env
 ```
 
-In a second terminal, start the backend:
+Edit `backend/.env`: set a random `SECRET_KEY` of at least 32 characters, `DATABASE_URL`, and GitHub OAuth credentials. Keep the OAuth callback at `http://localhost:8001/api/auth/github/callback` and use `http://localhost:5173` consistently in the browser. AI credentials are optional.
+
+Apply the schema explicitly before starting the backend:
+
 ```powershell
-cd backend
+# From backend/, after reviewing the database migration instructions.
+.\.venv\Scripts\python -m app.db.migrate
 .\.venv\Scripts\python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8001
 ```
 
-### 3. Explore the Dashboard
-Open your browser and navigate to the local link shown in your terminal (typically `http://localhost:5173`).
-- GitHub login is required; repository and workflow screens do not use demo data.
-- Switch themes (light/dark/system) and accent colors (blue/violet/green/orange) inside **Profile → Settings → Appearance**.
-- Trigger AI Log Diagnostics by clicking **Analyze with AI** on failed runs (such as Run #184).
-- Create team chats, query the RAG assistant, and generate release notes.
+In another terminal:
 
-### Supabase PostgreSQL
-
-Set `DATABASE_URL` in `backend/.env` to your Supabase PostgreSQL connection string. The browser does not connect to Supabase directly: the React frontend calls FastAPI, and FastAPI uses SQLAlchemy to store application data in Supabase PostgreSQL.
-
-### Automatic GitHub Actions Updates
-
-To receive workflow updates without opening the dashboard, configure these backend settings:
-
-```env
-GITHUB_WEBHOOK_SECRET=your-random-webhook-secret
-WEBHOOK_CALLBACK_URL=https://your-public-host.example.com/api/webhooks/github
+```powershell
+cd frontend
+npm ci
+npm run dev
 ```
 
-The callback must be publicly reachable by GitHub. A local `localhost` URL will not receive GitHub webhooks. The backend accepts signed `workflow_run` events and stores them in the `workflow_runs` table.
+Open `http://localhost:5173`. Once dependencies, configuration, and migrations are ready, `./start-dev.ps1` starts missing services in the background and prints their log locations.
 
-### Current Data Flow
+## Behavior
 
-1. A user signs in through GitHub OAuth.
-2. The backend fetches that user's accessible repositories and current GitHub Actions runs.
-3. The backend stores users, repositories, and workflow runs in Supabase PostgreSQL.
-4. Webhook registration is kept separate from repository loading so a webhook or ngrok problem cannot hide repositories.
-5. GitHub sends signed workflow events to `/api/webhooks/github`; the backend validates the signature and updates Supabase.
-6. The workspace fetches the real job logs from GitHub when a workflow run is opened.
+- GitHub OAuth loads real accessible repositories and workflow runs. Repository IDs distinguish repositories with the same name under different owners.
+- Repository selection is a saved, per-account dashboard preference. An empty selection displays none; it does not change GitHub permissions.
+- Opening a failed run fetches complete logs before automatic analysis. Saved results are reused; explicit reanalysis refreshes them. Gemini and Groq are compared when configured, with clearly marked deterministic fallback results.
+- Discussions are GitHub Issues. Comments, source authors, timestamps, issue IDs, and linked workflow runs are mirrored locally. Assistant messages become reviewable drafts before publication.
+- Webhook creation is explicit: configure a public HTTPS `WEBHOOK_CALLBACK_URL` and `GITHUB_WEBHOOK_SECRET`, then call `POST /api/repositories/{github_repository_id}/webhook`. Repository refresh does not create hooks.
+- Signed workflow webhooks update stored run metadata. Job logs are downloaded separately when opened. Cached summaries use the latest ten runs; workspace history shows up to fifty.
 
-No demo login, mock repository data, fake workflow logs, or client-side Supabase connection is used. Use `POST /api/repositories/{github_repository_id}/webhook` after the public callback is ready to register a repository webhook.
+## Validation
+
+```powershell
+cd backend
+.\.venv\Scripts\python -m ruff check app tests
+.\.venv\Scripts\python -m unittest discover -s tests -v
+.\.venv\Scripts\python -m pip check
+.\.venv\Scripts\python -m pip_audit
+```
+
+```powershell
+cd frontend
+npm run test
+npm run build
+npm run lint
+npm audit
+```
+
+See [database/README.md](database/README.md) for migration precautions and disposable PostgreSQL integration tests, and [AUDIT.md](AUDIT.md) for findings, measured improvements, and remaining limits.
+
+## Repository layout
+
+`frontend/` contains the browser application; `backend/` contains FastAPI, GitHub integration, and AI services; `database/` contains schema and migrations. `docker/compose.test.yml` supplies a disposable test database. `worker/` and `github-integration/` document future service boundaries; they are not running Celery, Redis, or Octokit services. There is no separate AI service deployment.

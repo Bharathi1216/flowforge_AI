@@ -1,4 +1,5 @@
 import logging
+import hashlib
 from datetime import datetime
 from typing import Any, Optional
 
@@ -40,6 +41,15 @@ class VectorStoreService:
         document: str,
         metadata: dict[str, Any],
     ) -> None:
+        with engine.connect() as connection:
+            previous = connection.execute(
+                text(
+                    "SELECT document FROM vector_documents WHERE id = :id AND collection_name = :collection"
+                ),
+                {"id": item_id, "collection": collection_name},
+            ).scalar()
+        if previous == document:
+            return
         embedding = self._vector_literal(self._embed(document))
         with engine.begin() as connection:
             connection.execute(
@@ -70,7 +80,7 @@ class VectorStoreService:
 
     def _doc_id(self, repo_id: str, run_id: str, step_name: str) -> str:
         slug = "".join(c if c.isalnum() else "_" for c in step_name.lower())[:30]
-        return f"fail-{repo_id}-{run_id}-{slug}"
+        return f"v2-fail-{repo_id}-{run_id}-{slug}-{hashlib.sha256(step_name.encode()).hexdigest()[:12]}"
 
     def index_failure(
         self,
@@ -83,8 +93,9 @@ class VectorStoreService:
         root_cause: str = "",
         suggested_fix: str = "",
         exit_code: int = 1,
+        run_attempt: int = 1,
     ) -> str:
-        doc_id = self._doc_id(repo_id, run_id, step_name)
+        doc_id = self._doc_id(repo_id, f"{run_id}:{run_attempt}", step_name)
         cleaned_snippet = self._clean_text(error_snippet)
         if not cleaned_snippet:
             return ""
@@ -118,10 +129,9 @@ class VectorStoreService:
         )
 
         if suggested_fix:
-            slug = "".join(c if c.isalnum() else "_" for c in step_name.lower())[:30]
             self.index_knowledge_item(
                 repo_id=repo_id,
-                item_id=f"kb-fail-{run_id}-{slug}",
+                item_id=f"kb-{doc_id}",
                 error_type=f"{step_name} Failure",
                 suggested_fix=suggested_fix,
                 category="failure",
@@ -141,13 +151,15 @@ class VectorStoreService:
         workflow_name: str,
         step_name: str,
         log_excerpt: str,
+        run_attempt: int = 1,
+        job_id: str | None = None,
     ) -> str:
         """Index successful workflow evidence as a distinct retrieval collection."""
         cleaned_excerpt = self._clean_text(log_excerpt)
         if not cleaned_excerpt:
             return ""
         slug = "".join(c if c.isalnum() else "_" for c in step_name.lower())[:30]
-        doc_id = f"success-{repo_id}-{run_id}-{slug}"
+        doc_id = f"v2-success-{repo_id}-{run_id}:{run_attempt}-{slug}-{hashlib.sha256((job_id or step_name).encode()).hexdigest()[:12]}"
         if engine.dialect.name == "postgresql":
             with engine.connect() as connection:
                 exists = connection.execute(
@@ -200,22 +212,23 @@ class VectorStoreService:
 
         query_vector = self._vector_literal(self._embed(cleaned))
         exclude_current_run = (
-            "AND (metadata->>'run_id' IS NULL OR metadata->>'run_id' <> :current_run_id)"
+            "AND COALESCE(NULLIF(metadata->>'run_id', ''), metadata->>'similar_run_id', '') <> :current_run_id"
             if current_run_id
             else ""
         )
         parameters: dict[str, Any] = {
             "repo_id": str(repo_id),
             "query_vector": query_vector,
-            "limit": max(limit + 2, 1),
+            "limit": max(limit * 4, 12),
         }
         if current_run_id:
             parameters["current_run_id"] = str(current_run_id)
 
         with engine.connect() as connection:
-            rows = connection.execute(
-                text(
-                    f"""
+            rows = (
+                connection.execute(
+                    text(
+                        f"""
                     SELECT
                         id, collection_name, document, metadata,
                         1 - (embedding <=> CAST(:query_vector AS vector))
@@ -229,16 +242,25 @@ class VectorStoreService:
                     ORDER BY embedding <=> CAST(:query_vector AS vector)
                     LIMIT :limit
                     """
-                ),
-                parameters,
-            ).mappings().all()
+                    ),
+                    parameters,
+                )
+                .mappings()
+                .all()
+            )
 
         matches = []
+        seen_runs = set()
         for row in rows:
             similarity = max(0.0, min(1.0, float(row["similarity"])))
             if similarity < min_similarity:
                 continue
             metadata = row["metadata"] or {}
+            match_run = metadata.get("run_id") or metadata.get("similar_run_id")
+            if match_run and match_run in seen_runs:
+                continue
+            if match_run:
+                seen_runs.add(match_run)
             document = row["document"] or ""
             matches.append(
                 {
@@ -284,11 +306,7 @@ class VectorStoreService:
         similar_run_id: Optional[str] = None,
         similar_run_number: Optional[int] = None,
     ) -> str:
-        document = (
-            f"Category: {category}\n"
-            f"Error Type: {error_type}\n"
-            f"Suggested Fix: {suggested_fix}"
-        )
+        document = f"Category: {category}\nError Type: {error_type}\nSuggested Fix: {suggested_fix}"
         self._upsert(
             item_id,
             "knowledge_items",
@@ -308,9 +326,10 @@ class VectorStoreService:
 
     def get_knowledge_base(self, repo_id: str, limit: int = 25) -> list[dict[str, Any]]:
         with engine.connect() as connection:
-            rows = connection.execute(
-                text(
-                    """
+            rows = (
+                connection.execute(
+                    text(
+                        """
                     SELECT id, document, metadata
                     FROM vector_documents
                     WHERE collection_name = 'knowledge_items'
@@ -318,18 +337,19 @@ class VectorStoreService:
                     ORDER BY created_at DESC
                     LIMIT :limit
                     """
-                ),
-                {"repo_id": str(repo_id), "limit": limit},
-            ).mappings().all()
+                    ),
+                    {"repo_id": str(repo_id), "limit": limit},
+                )
+                .mappings()
+                .all()
+            )
 
         items = []
         for row in rows:
             metadata = row["metadata"] or {}
             document = row["document"] or ""
             suggested_fix = (
-                document.split("Suggested Fix: ", 1)[-1]
-                if "Suggested Fix: " in document
-                else ""
+                document.split("Suggested Fix: ", 1)[-1] if "Suggested Fix: " in document else ""
             )
             items.append(
                 {
@@ -353,22 +373,26 @@ class VectorStoreService:
 
         query_vector = self._vector_literal(self._embed(cleaned))
         with engine.connect() as connection:
-            rows = connection.execute(
-                text(
-                    """
+            rows = (
+                connection.execute(
+                    text(
+                        """
                     SELECT document
                     FROM vector_documents
                     WHERE metadata->>'repo_id' = :repo_id
                     ORDER BY embedding <=> CAST(:query_vector AS vector)
                     LIMIT :limit
                     """
-                ),
-                {
-                    "repo_id": str(repo_id),
-                    "query_vector": query_vector,
-                    "limit": limit,
-                },
-            ).scalars().all()
+                    ),
+                    {
+                        "repo_id": str(repo_id),
+                        "query_vector": query_vector,
+                        "limit": limit,
+                    },
+                )
+                .scalars()
+                .all()
+            )
         return [document for document in rows if document]
 
 

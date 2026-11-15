@@ -1,6 +1,6 @@
-import React from 'react';
 import { History } from 'lucide-react';
-import { useToast } from '../contexts/ToastContext';
+import React from 'react';
+import { useToast } from '../contexts/toastState';
 
 interface SimilarFailureCardProps {
   pastFailureId: string;
@@ -23,9 +23,9 @@ export const SimilarFailureCard: React.FC<SimilarFailureCardProps> = ({
   errorSnippet,
   fixedBy,
   solutionSummary,
-  similarityScore = 94,
+
   onNotify,
-  onDiscuss
+  onDiscuss,
 }) => {
   const { success } = useToast();
 
@@ -43,7 +43,9 @@ export const SimilarFailureCard: React.FC<SimilarFailureCardProps> = ({
             <History className="h-3 w-3" /> Similar Past Failure (RAG Match)
           </span>
         </div>
-        <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400">Run #{pastFailureId}</span>
+        <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
+          Run #{pastFailureId}
+        </span>
       </div>
 
       <div className="rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 p-3 font-mono text-[11px] text-slate-800 dark:text-slate-200">
@@ -53,7 +55,8 @@ export const SimilarFailureCard: React.FC<SimilarFailureCardProps> = ({
       {/* Solution & Author */}
       <div className="space-y-3 text-xs">
         <div className="text-slate-700 dark:text-slate-300 leading-relaxed font-sans">
-          <b className="text-emerald-700 dark:text-emerald-400 font-bold">Resolution Applied:</b> {solutionSummary}
+          <b className="text-emerald-700 dark:text-emerald-400 font-bold">Resolution Applied:</b>{' '}
+          {solutionSummary}
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-200 dark:border-slate-800">
@@ -64,8 +67,12 @@ export const SimilarFailureCard: React.FC<SimilarFailureCardProps> = ({
               className="h-6 w-6 rounded-full object-cover ring-2 ring-purple-500/40"
             />
             <div>
-              <span className="text-xs font-bold text-slate-900 dark:text-white block leading-none">{fixedBy.name}</span>
-              <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">Resolved similar issue in {repoName}</span>
+              <span className="text-xs font-bold text-slate-900 dark:text-white block leading-none">
+                {fixedBy.name}
+              </span>
+              <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">
+                Resolved similar issue in {repoName}
+              </span>
             </div>
           </div>
 
