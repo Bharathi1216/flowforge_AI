@@ -1,56 +1,37 @@
-import React, { useState, useEffect } from 'react';
-import { User, ShieldCheck, Bell, Palette, Plus, Trash2, Check, Sun, Moon, Sparkles, LogOut, Key, ExternalLink, RefreshCw } from 'lucide-react';
-import { useTheme } from '../contexts/ThemeContext';
-import { useAuth } from '../contexts/AuthContext';
-import { repositoryService } from '../services/repositoryService';
-import { GithubIcon } from '../components/GithubIcon';
+import { useQuery } from '@tanstack/react-query';
+import { Check, LogOut, Moon, Palette, Plus, ShieldCheck, Sun, Trash2, User } from 'lucide-react';
+import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { AddRepositoryModal } from '../components/AddRepositoryModal';
 import { GitHubConnectModal } from '../components/GitHubConnectModal';
-import { useToast } from '../contexts/ToastContext';
-import { useNavigate } from 'react-router-dom';
+import { GithubIcon } from '../components/GithubIcon';
+import { useAuth } from '../contexts/authState';
+import { useTheme } from '../contexts/themeState';
+import { useToast } from '../contexts/toastState';
+import { repositoryService } from '../services/repositoryService';
 
 export const Settings: React.FC = () => {
   const navigate = useNavigate();
   const { theme, toggleTheme } = useTheme();
   const { success, info } = useToast();
-  const { user, token, username, logout, selectedRepoNames, setSelectedRepoNames, isAuthenticated } = useAuth();
+  const { user, token, logout, selectedRepoIds, setSelectedRepoIds, isAuthenticated } = useAuth();
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isConnectModalOpen, setIsConnectModalOpen] = useState(false);
-  const [allRepos, setAllRepos] = useState<any[]>([]);
-  const [loadingRepos, setLoadingRepos] = useState(false);
-
-  // Notification preferences (persisted locally)
-  const [notifyOnFailure, setNotifyOnFailure] = useState(true);
-  const [notifyOnMentions, setNotifyOnMentions] = useState(true);
-  const [notifyOnPR, setNotifyOnPR] = useState(false);
-
-  useEffect(() => {
-    if (isAuthenticated) {
-      loadRepos();
-    }
-  }, [isAuthenticated, user]);
-
-  const loadRepos = async () => {
-    setLoadingRepos(true);
-    try {
-      const repos = await repositoryService.getRepositories();
-      setAllRepos(repos);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoadingRepos(false);
-    }
-  };
+  const repositoryQuery = useQuery({
+    ...repositoryService.queryOptions(user?.id || ''),
+    enabled: isAuthenticated,
+  });
+  const allRepos = repositoryQuery.data || [];
 
   const handleDisconnectRepo = (repoName: string) => {
-    const updated = selectedRepoNames.filter((r) => r !== repoName);
-    setSelectedRepoNames(updated);
-    info(`Removed repository access for ${repoName}`);
+    const updated = (selectedRepoIds ?? allRepos.map((r) => r.id)).filter((r) => r !== repoName);
+    setSelectedRepoIds(updated);
+    info(`Hidden repository ${repoName}`);
   };
 
   const handleSavePermissions = (enabledNames: string[]) => {
-    setSelectedRepoNames(enabledNames);
+    setSelectedRepoIds(enabledNames);
   };
 
   const handleLogout = async () => {
@@ -59,8 +40,8 @@ export const Settings: React.FC = () => {
     navigate('/');
   };
 
-  const connectedRepos = allRepos.filter((r) =>
-    selectedRepoNames.length === 0 ? true : selectedRepoNames.includes(r.name)
+  const connectedRepos = allRepos.filter(
+    (r) => selectedRepoIds === null || selectedRepoIds.includes(r.id),
   );
 
   return (
@@ -71,10 +52,16 @@ export const Settings: React.FC = () => {
           Settings & Account
         </h1>
         <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-          Manage your GitHub account connection, authorized repositories, notifications, and appearance.
+          Manage your GitHub account connection, displayed repositories, notifications, and
+          appearance.
         </p>
       </div>
 
+      {repositoryQuery.error && (
+        <p role="alert" className="text-sm text-amber-600">
+          Repositories could not be loaded. Try again shortly.
+        </p>
+      )}
       <div className="space-y-6">
         {/* 1. Account Section */}
         <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0E121D] p-6 backdrop-blur-md shadow-xl space-y-4">
@@ -98,9 +85,13 @@ export const Settings: React.FC = () => {
                   </div>
                 )}
                 <div>
-                  <h4 className="text-sm font-bold text-slate-900 dark:text-white">{user.name || user.username}</h4>
+                  <h4 className="text-sm font-bold text-slate-900 dark:text-white">
+                    {user.name || user.username}
+                  </h4>
                   <div className="flex items-center gap-2 mt-0.5">
-                    <span className="text-xs text-slate-500 dark:text-slate-400 font-mono">@{user.username}</span>
+                    <span className="text-xs text-slate-500 dark:text-slate-400 font-mono">
+                      @{user.username}
+                    </span>
                     <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
                       <Check className="h-3 w-3" /> {token ? 'PAT Active' : 'Public Access'}
                     </span>
@@ -127,7 +118,9 @@ export const Settings: React.FC = () => {
           ) : (
             <div className="flex items-center justify-between p-4 rounded-xl bg-purple-500/10 border border-purple-500/20">
               <div className="space-y-0.5">
-                <h4 className="text-xs font-bold text-slate-900 dark:text-white">No GitHub account connected</h4>
+                <h4 className="text-xs font-bold text-slate-900 dark:text-white">
+                  No GitHub account connected
+                </h4>
                 <p className="text-[11px] text-slate-500 dark:text-slate-400">
                   Connect your GitHub token or username to load real repositories and workflows.
                 </p>
@@ -155,14 +148,14 @@ export const Settings: React.FC = () => {
               className="flex items-center gap-1.5 text-xs font-bold text-purple-600 dark:text-purple-400 hover:text-purple-700 dark:hover:text-purple-300"
             >
               <Plus className="h-3.5 w-3.5" />
-              <span>Manage Access</span>
+              <span>Choose Repositories</span>
             </button>
           </div>
 
           <div className="space-y-2">
             {connectedRepos.length === 0 ? (
               <div className="py-6 text-center text-xs text-slate-500 dark:text-slate-400">
-                No repositories authorized yet. Click "Manage Access" to select repositories.
+                No repositories selected. Choose repositories to display.
               </div>
             ) : (
               connectedRepos.map((repo) => (
@@ -172,7 +165,9 @@ export const Settings: React.FC = () => {
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
-                      <span className="text-xs font-bold text-slate-900 dark:text-white truncate">{repo.name}</span>
+                      <span className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                        {repo.name}
+                      </span>
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-mono">
                         {repo.isPrivate ? 'Private' : 'Public'}
                       </span>
@@ -183,7 +178,7 @@ export const Settings: React.FC = () => {
                   </div>
 
                   <button
-                    onClick={() => handleDisconnectRepo(repo.name)}
+                    onClick={() => handleDisconnectRepo(repo.id)}
                     className="p-1.5 text-slate-400 hover:text-rose-500 transition-colors ml-2"
                     title="Remove access"
                   >
@@ -204,7 +199,9 @@ export const Settings: React.FC = () => {
 
           <div className="flex items-center justify-between">
             <div className="space-y-0.5">
-              <span className="text-xs font-bold text-slate-900 dark:text-white">Interface Theme</span>
+              <span className="text-xs font-bold text-slate-900 dark:text-white">
+                Interface Theme
+              </span>
               <p className="text-[11px] text-slate-500 dark:text-slate-400">
                 Switch between high-contrast dark mode and clean light mode.
               </p>
@@ -233,7 +230,7 @@ export const Settings: React.FC = () => {
       <AddRepositoryModal
         isOpen={isAddModalOpen}
         onClose={() => setIsAddModalOpen(false)}
-        connectedRepoNames={selectedRepoNames}
+        connectedRepoIds={selectedRepoIds}
         onSavePermissions={handleSavePermissions}
       />
 

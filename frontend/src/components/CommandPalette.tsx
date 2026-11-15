@@ -1,34 +1,39 @@
-import React, { useEffect, useState, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Search, Terminal, MessageSquare, Users, FileText, X, FolderGit2, Settings } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
+import { FolderGit2, Search, Settings, X } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../contexts/authState';
 import { repositoryService } from '../services/repositoryService';
-import { Repository } from '../types';
 
 interface CommandPaletteProps {
   isOpen: boolean;
   onClose: () => void;
 }
 
-export const CommandPalette: React.FC<CommandPaletteProps> = ({ isOpen, onClose }) => {
+export const CommandPalette: React.FC<CommandPaletteProps> = (props) =>
+  props.isOpen ? <CommandPaletteContent {...props} /> : null;
+const CommandPaletteContent: React.FC<CommandPaletteProps> = ({ isOpen, onClose }) => {
   const navigate = useNavigate();
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [repos, setRepos] = useState<Repository[]>([]);
+  const { user } = useAuth();
+  const { data: repos = [] } = useQuery(repositoryService.queryOptions(user?.id || ''));
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (isOpen) {
-      setQuery('');
-      setSelectedIndex(0);
-      setTimeout(() => inputRef.current?.focus(), 50);
-      repositoryService.getRepositories().then(setRepos).catch(console.error);
-    }
-  }, [isOpen]);
+    const timer = window.setTimeout(() => inputRef.current?.focus(), 0);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   // Flattened search items
   const items = React.useMemo(() => {
-    const results: { type: 'repo' | 'nav' | 'action'; title: string; subtitle: string; link: string }[] = [];
+    const results: {
+      type: 'repo' | 'nav' | 'action';
+      title: string;
+      subtitle: string;
+      link: string;
+    }[] = [];
 
     // Global navigation shortcuts
     results.push({
@@ -59,7 +64,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ isOpen, onClose 
           type: 'repo',
           title: repo.name,
           subtitle: `Repository • @${repo.owner} • ${repo.language || 'Code'} • ${repo.isPrivate ? 'Private' : 'Public'}`,
-          link: `/repositories/${repo.name}`,
+          link: `/repositories/${encodeURIComponent(repo.id)}`,
         });
       }
     });
@@ -183,7 +188,9 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ isOpen, onClose 
 
                       <span
                         className={`text-[10px] font-mono px-2 py-0.5 rounded ${
-                          isSelected ? 'bg-white/20 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-400'
+                          isSelected
+                            ? 'bg-white/20 text-white'
+                            : 'bg-slate-100 dark:bg-slate-800 text-slate-400'
                         }`}
                       >
                         Jump

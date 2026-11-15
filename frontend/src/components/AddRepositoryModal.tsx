@@ -1,68 +1,75 @@
-import React, { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { X, Search, ShieldCheck, Check, Plus, FolderGit2, RefreshCw } from 'lucide-react';
-import { GithubIcon } from './GithubIcon';
+import { useQuery } from '@tanstack/react-query';
+import { AnimatePresence, motion } from 'framer-motion';
+import { RefreshCw, Search, ShieldCheck, X } from 'lucide-react';
+import React, { useState } from 'react';
+import { useAuth } from '../contexts/authState';
+import { useToast } from '../contexts/toastState';
 import { repositoryService } from '../services/repositoryService';
 import { Repository } from '../types';
-import { useToast } from '../contexts/ToastContext';
+import { GithubIcon } from './GithubIcon';
 
 interface AddRepositoryModalProps {
   isOpen: boolean;
   onClose: () => void;
-  connectedRepoNames: string[];
+  connectedRepoIds: string[] | null;
   onSavePermissions: (enabledNames: string[]) => void;
 }
 
-export const AddRepositoryModal: React.FC<AddRepositoryModalProps> = ({
+export const AddRepositoryModal: React.FC<AddRepositoryModalProps> = (props) => {
+  const { user } = useAuth();
+  const query = useQuery({
+    ...repositoryService.queryOptions(user?.id || ''),
+    enabled: props.isOpen && !!user,
+  });
+  if (!props.isOpen) return null;
+  if (query.isPending || query.isError)
+    return (
+      <div className="fixed inset-0 z-50 grid place-items-center bg-black/70">
+        <div className="rounded-xl bg-white p-6 text-slate-900">
+          <p role={query.isError ? 'alert' : 'status'}>
+            {query.isError ? 'Repositories could not be loaded.' : 'Loading repositories...'}
+          </p>
+          {query.isError && <button onClick={() => void query.refetch()}>Try again</button>}
+          <button onClick={props.onClose} className="ml-4">
+            Close
+          </button>
+        </div>
+      </div>
+    );
+  return <RepositoryPicker {...props} allRepos={query.data} />;
+};
+
+const RepositoryPicker: React.FC<AddRepositoryModalProps & { allRepos: Repository[] }> = ({
   isOpen,
   onClose,
-  connectedRepoNames,
+  connectedRepoIds,
   onSavePermissions,
+  allRepos,
 }) => {
   const { success } = useToast();
-  const [selectedRepos, setSelectedRepos] = useState<string[]>([]);
-  const [allRepos, setAllRepos] = useState<Repository[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [selectedRepos, setSelectedRepos] = useState<string[]>(
+    () => connectedRepoIds ?? allRepos.map((repo) => repo.id),
+  );
+  const loading = false;
+  const loadError = null;
   const [search, setSearch] = useState('');
-
-  useEffect(() => {
-    if (isOpen) {
-      setSelectedRepos([...connectedRepoNames]);
-      loadRepos();
-    }
-  }, [isOpen, connectedRepoNames]);
-
-  const loadRepos = async () => {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      const repos = await repositoryService.getRepositories();
-      setAllRepos(repos);
-    } catch (e) {
-      console.error(e);
-      setLoadError('GitHub authorization has expired. Sign out and sign in with GitHub again.');
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const toggleRepo = (name: string) => {
     setSelectedRepos((prev) =>
-      prev.includes(name) ? prev.filter((r) => r !== name) : [...prev, name]
+      prev.includes(name) ? prev.filter((r) => r !== name) : [...prev, name],
     );
   };
 
   const handleSave = () => {
     onSavePermissions(selectedRepos);
-    success(`Updated repository permissions (${selectedRepos.length} authorized)`);
+    success(`Updated displayed repositories (${selectedRepos.length} selected)`);
     onClose();
   };
 
   const filteredRepos = allRepos.filter(
     (r) =>
       r.name.toLowerCase().includes(search.toLowerCase()) ||
-      (r.description || '').toLowerCase().includes(search.toLowerCase())
+      (r.description || '').toLowerCase().includes(search.toLowerCase()),
   );
 
   return (
@@ -93,10 +100,10 @@ export const AddRepositoryModal: React.FC<AddRepositoryModalProps> = ({
                 </div>
                 <div>
                   <h3 className="text-base font-bold text-slate-900 dark:text-white font-heading">
-                    Manage Repository Access
+                    Displayed Repositories
                   </h3>
                   <p className="text-xs text-slate-500 dark:text-slate-400">
-                    Select which GitHub repositories FlowForge AI monitors.
+                    Select which GitHub repositories to display.
                   </p>
                 </div>
               </div>
@@ -112,7 +119,9 @@ export const AddRepositoryModal: React.FC<AddRepositoryModalProps> = ({
             <div className="flex items-start gap-2.5 rounded-xl border border-purple-500/20 bg-purple-500/10 p-3 text-xs text-purple-700 dark:text-purple-300">
               <ShieldCheck className="h-4 w-4 shrink-0 text-purple-600 dark:text-purple-400 mt-0.5" />
               <span className="leading-relaxed">
-                <i>FlowForge AI only accesses repositories authorized by you.</i>
+                <i>
+                  This changes your dashboard view. GitHub OAuth permissions are managed on GitHub.
+                </i>
               </span>
             </div>
 
@@ -144,11 +153,11 @@ export const AddRepositoryModal: React.FC<AddRepositoryModalProps> = ({
                 </div>
               ) : (
                 filteredRepos.map((repo) => {
-                  const isSelected = selectedRepos.includes(repo.name);
+                  const isSelected = selectedRepos.includes(repo.id);
                   return (
                     <div
-                      key={repo.name}
-                      onClick={() => toggleRepo(repo.name)}
+                      key={repo.id}
+                      onClick={() => toggleRepo(repo.id)}
                       className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition-all ${
                         isSelected
                           ? 'border-purple-500 bg-purple-500/10 text-slate-900 dark:text-white shadow-sm'
@@ -164,12 +173,16 @@ export const AddRepositoryModal: React.FC<AddRepositoryModalProps> = ({
                         />
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
-                            <span className="text-xs font-bold text-slate-900 dark:text-white truncate">{repo.name}</span>
+                            <span className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                              {repo.name}
+                            </span>
                             <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-mono">
                               {repo.isPrivate ? 'Private' : 'Public'}
                             </span>
                           </div>
-                          <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">{repo.description}</p>
+                          <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
+                            {repo.description}
+                          </p>
                         </div>
                       </div>
 
@@ -185,7 +198,8 @@ export const AddRepositoryModal: React.FC<AddRepositoryModalProps> = ({
             {/* Action Buttons */}
             <div className="flex items-center justify-between pt-2 border-t border-slate-200 dark:border-slate-800">
               <span className="text-xs text-slate-500 dark:text-slate-400">
-                <b className="text-slate-900 dark:text-white">{selectedRepos.length}</b> repositories selected
+                <b className="text-slate-900 dark:text-white">{selectedRepos.length}</b>{' '}
+                repositories selected
               </span>
               <div className="flex gap-2.5">
                 <button

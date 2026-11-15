@@ -1,64 +1,51 @@
 $ErrorActionPreference = 'Stop'
-
-$apiPort = 8001
-$ports = @($apiPort, 5173)
 $backendPath = Join-Path $PSScriptRoot 'backend'
+$frontendPath = Join-Path $PSScriptRoot 'frontend'
 $backendPython = Join-Path $backendPath '.venv\Scripts\python.exe'
 $listeningPorts = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
-    Where-Object { $_.LocalPort -in $ports } |
     Select-Object -ExpandProperty LocalPort -Unique
 
-if ($apiPort -notin $listeningPorts) {
-    if (-not (Test-Path $backendPython)) {
-        throw 'Backend environment is missing. Create backend\.venv with Python 3.11 and install backend\requirements.txt first.'
+if (8001 -notin $listeningPorts) {
+    if (-not (Test-Path -LiteralPath $backendPython)) {
+        throw 'Create backend\.venv with Python 3.11 or 3.12 and install backend\requirements-dev.txt first.'
     }
-    $backendCommand = "& `"$backendPython`" -m uvicorn app.main:app --app-dir . --reload --host 127.0.0.1 --port 8001"
-    Start-Process powershell -WorkingDirectory $backendPath -ArgumentList @(
-        '-NoExit',
-        '-Command',
-        $backendCommand
-    )
-    Write-Host 'Started FastAPI on http://localhost:8001'
+    & $backendPython -c 'import sys; assert (3, 11) <= sys.version_info[:2] <= (3, 12), "Use Python 3.11 or 3.12"'
+    if ($LASTEXITCODE -ne 0) { throw 'The backend Python environment is broken. Recreate backend\.venv.' }
+    Push-Location $backendPath
+    try {
+        & $backendPython -c 'from app.db.database import init_db; init_db()'
+        if ($LASTEXITCODE -ne 0) { throw 'Backend readiness failed. Check backend\.env and run python -m app.db.migrate from backend/.' }
+    } finally { Pop-Location }
+    $backendOut = Join-Path $backendPath '.venv\flowforge.out.log'
+    $backendErr = Join-Path $backendPath '.venv\flowforge.err.log'
+    Start-Process -FilePath $backendPython -WorkingDirectory $backendPath -WindowStyle Hidden -ArgumentList @(
+        '-m', 'uvicorn', 'app.main:app', '--reload', '--host', '127.0.0.1', '--port', '8001'
+    ) -RedirectStandardOutput $backendOut -RedirectStandardError $backendErr
+    Write-Host "Started FastAPI. Logs: $backendOut and $backendErr"
 } else {
     try {
-        $health = Invoke-WebRequest -Uri 'http://127.0.0.1:8001/health' -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
-        $loginReady = $false
-        try {
-            $login = Invoke-WebRequest -Uri 'http://127.0.0.1:8001/api/auth/github/login' -UseBasicParsing -MaximumRedirection 0 -TimeoutSec 3 -ErrorAction Stop
-                $loginReady = $login.StatusCode -eq 307 -and ([uri]$login.Headers['Location']).Host -eq 'github.com'
-        } catch {
-                $loginResponse = $_.Exception.Response
-                $loginReady = $loginResponse -and [int]$loginResponse.StatusCode -eq 307 -and ([uri]$loginResponse.Headers['Location']).Host -eq 'github.com'
-        }
-
-        if ($health.StatusCode -eq 200 -and $loginReady) {
-            Write-Host 'FastAPI is already running on port 8001'
-        } else {
-            Write-Warning 'Port 8001 is occupied, but the backend OAuth check failed. Restart the stale backend process.'
-        }
-    } catch {
-        Write-Warning 'Port 8001 is occupied by a stale or unhealthy process. Restart it before using the app.'
-    }
+        $health = Invoke-RestMethod -Uri 'http://127.0.0.1:8001/health' -TimeoutSec 3
+        if ($health.status -ne 'ok') { throw 'Unexpected health response' }
+        Write-Host 'Backend is already responding on port 8001.'
+    } catch { Write-Warning 'Port 8001 is occupied by an unhealthy or unrelated process. Review it before starting FlowForge.' }
 }
 
 if (5173 -notin $listeningPorts) {
-    Start-Process powershell -WorkingDirectory (Join-Path $PSScriptRoot 'frontend') -ArgumentList @(
-        '-NoExit',
-        '-Command',
-        'npm run dev'
-    )
-    Write-Host 'Started Vite on http://localhost:5173'
+    $viteScript = Join-Path $frontendPath 'node_modules\vite\bin\vite.js'
+    if (-not (Test-Path -LiteralPath $viteScript)) { throw 'Run npm ci in frontend/ first.' }
+    $frontendLogDir = Join-Path $frontendPath 'node_modules\.tmp'
+    New-Item -ItemType Directory -Path $frontendLogDir -Force | Out-Null
+    $frontendOut = Join-Path $frontendLogDir 'flowforge.out.log'
+    $frontendErr = Join-Path $frontendLogDir 'flowforge.err.log'
+    Start-Process -FilePath (Get-Command node).Source -WorkingDirectory $frontendPath -WindowStyle Hidden -ArgumentList @(
+        ('"' + $viteScript + '"')
+    ) -RedirectStandardOutput $frontendOut -RedirectStandardError $frontendErr
+    Write-Host "Started Vite. Logs: $frontendOut and $frontendErr"
 } else {
     try {
-        $frontend = Invoke-WebRequest -Uri 'http://127.0.0.1:5173/' -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
-        if ($frontend.Content -match 'FlowForge AI' -and $frontend.Content -match '/src/main.tsx') {
-            Write-Host 'FlowForge frontend is already running on port 5173'
-        } else {
-            Write-Warning 'Port 5173 is serving a different app. Stop that process, then run start-dev.ps1 again.'
-        }
-    } catch {
-        Write-Warning 'Port 5173 is occupied by an unhealthy or unrelated process. Stop it before starting FlowForge.'
-    }
+        $frontend = Invoke-WebRequest -Uri 'http://127.0.0.1:5173/' -UseBasicParsing -TimeoutSec 3
+        if ($frontend.Content -notmatch '/src/main.tsx') { throw 'Unexpected frontend response' }
+        Write-Host 'Vite is already responding on port 5173.'
+    } catch { Write-Warning 'Port 5173 is occupied by an unhealthy or unrelated process. Review it before starting FlowForge.' }
 }
-
-Write-Host 'Open http://localhost:5173 when both terminals are ready.'
+Write-Host 'Open http://localhost:5173 when both services are ready.'

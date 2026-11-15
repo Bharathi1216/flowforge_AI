@@ -1,8 +1,8 @@
+import { AnimatePresence, motion } from 'framer-motion';
+import { ArrowRight, LogOut, RefreshCw, ShieldAlert } from 'lucide-react';
 import React from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { ShieldAlert, ArrowRight, LogOut, RefreshCw } from 'lucide-react';
+import { useAuth } from '../contexts/authState';
 import { GithubIcon } from './GithubIcon';
-import { useAuth } from '../contexts/AuthContext';
 
 interface SessionExpiredModalProps {
   isOpen: boolean;
@@ -10,7 +10,7 @@ interface SessionExpiredModalProps {
 }
 
 export const SessionExpiredModal: React.FC<SessionExpiredModalProps> = ({ isOpen }) => {
-  const { user, logout } = useAuth();
+  const { logout } = useAuth();
   const [isRedirecting, setIsRedirecting] = React.useState(false);
 
   if (!isOpen) return null;
@@ -56,7 +56,8 @@ export const SessionExpiredModal: React.FC<SessionExpiredModalProps> = ({ isOpen
               GitHub Authorization Expired
             </h2>
             <p className="text-xs text-slate-400 leading-relaxed">
-              Your GitHub credentials have expired or were revoked on GitHub. You cannot view workflows, logs, or post discussions until you authorize again.
+              Your GitHub credentials have expired or were revoked on GitHub. You cannot view
+              workflows, logs, or post discussions until you authorize again.
             </p>
           </div>
 

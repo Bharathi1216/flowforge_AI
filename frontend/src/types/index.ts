@@ -66,6 +66,7 @@ export interface WorkflowRun {
   repoId?: string;
   name: string;
   runNumber: number;
+  runAttempt?: number;
   status: WorkflowStatus;
   event?: string;
   triggeredBy?: User;
@@ -102,7 +103,13 @@ export interface ImportantLogBlock {
   startLine?: number;
   end_line?: number;
   endLine?: number;
-  lines?: { line_number?: number; lineNumber?: number; text: string; is_candidate?: boolean; isCandidate?: boolean }[];
+  lines?: {
+    line_number?: number;
+    lineNumber?: number;
+    text: string;
+    is_candidate?: boolean;
+    isCandidate?: boolean;
+  }[];
   text?: string;
   importance_score?: number;
   importanceScore?: number;
@@ -258,6 +265,7 @@ export interface Release {
 }
 
 export interface AIMessage {
+  codeSnippet?: string;
   id: string;
   role: 'user' | 'assistant';
   content: string;

@@ -1,123 +1,99 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { User } from '../types';
-import { authService } from '../services/authService';
-import { repositoryService } from '../services/repositoryService';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { SessionExpiredModal } from '../components/SessionExpiredModal';
-
-interface AuthContextType {
-  user: User | null;
-  token: string | null;
-  username: string | null;
-  isAuthenticated: boolean;
-  isLoading: boolean;
-  isAuthExpired: boolean;
-  triggerAuthExpired: () => void;
-  selectedRepoNames: string[];
-  loginWithToken: (token: string) => Promise<User>;
-  loginWithUsername: (username: string) => Promise<User>;
-  logout: () => Promise<void>;
-  setSelectedRepoNames: (repos: string[]) => void;
-  refreshUser: () => Promise<void>;
-}
-
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
+import { resetRequestScope } from '../services/apiClient';
+import { authService } from '../services/authService';
+import { readSelection, saveSelection } from '../services/preferences';
+import { repositoryService } from '../services/repositoryService';
+import { User } from '../types';
+import { AuthContext } from './authState';
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
-  const [token, setToken] = useState<string | null>(null);
-  const [username, setUsername] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isAuthExpired, setIsAuthExpired] = useState(false);
-  const [selectedRepoNames, setSelectedRepoNamesState] = useState<string[]>([]);
-
+  const [selection, setSelection] = useState<{ userId: string; ids: string[] } | null>(null);
+  const epoch = useRef(0);
+  const clearSession = useCallback((expired = false) => {
+    epoch.current += 1;
+    resetRequestScope();
+    repositoryService.clearCache();
+    setUser(null);
+    setSelection(null);
+    setIsAuthExpired(expired);
+  }, []);
   useEffect(() => {
-    const handleExpiredEvent = () => {
-      setIsAuthExpired(true);
-      setUser(null);
-    };
-
-    window.addEventListener('flowforge:auth-expired', handleExpiredEvent);
+    const expired = () => clearSession(true);
+    window.addEventListener('flowforge:auth-expired', expired);
+    return () => window.removeEventListener('flowforge:auth-expired', expired);
+  }, [clearSession]);
+  useEffect(() => {
+    let active = true;
+    const generation = epoch.current;
+    authService
+      .getCurrentUser()
+      .then((current) => {
+        if (!active || generation !== epoch.current) return;
+        repositoryService.setAccount(current?.id || null);
+        setUser(current);
+      })
+      .catch(() => {
+        if (active && generation === epoch.current) setUser(null);
+      })
+      .finally(() => {
+        if (active) setIsLoading(false);
+      });
     return () => {
-      window.removeEventListener('flowforge:auth-expired', handleExpiredEvent);
+      active = false;
     };
   }, []);
-
-  useEffect(() => {
-    const initAuth = async () => {
-      try {
-        const currentUser = await authService.getCurrentUser();
-        setUser(currentUser);
-        setToken(null);
-        setUsername(currentUser?.username || null);
-      } catch (e: any) {
-        const detail = e?.response?.data?.detail;
-        if (typeof detail === 'string' && detail.toLowerCase().includes('expired')) {
-          setIsAuthExpired(true);
-        }
-        setUser(null);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    initAuth();
-  }, []);
-
-  const loginWithToken = async (newToken: string): Promise<User> => {
-    void newToken;
-    window.location.href = `${import.meta.env.VITE_API_URL || '/api'}/auth/github/login`;
-    throw new Error('Redirecting to GitHub');
-  };
-
-  const loginWithUsername = async (newUsername: string): Promise<User> => {
-    void newUsername;
-    window.location.href = `${import.meta.env.VITE_API_URL || '/api'}/auth/github/login`;
-    throw new Error('Redirecting to GitHub');
-  };
-
-  const logout = async () => {
-    try {
-      await authService.logout();
-    } catch (error) {
-      console.error('Error signing out:', error);
-    } finally {
+  const logout = useCallback(async () => {
+    clearSession();
+    await authService.logout();
+  }, [clearSession]);
+  const setSelectedRepoIds = useCallback(
+    (ids: string[]) => {
+      if (!user) return;
+      saveSelection(user.id, ids);
+      setSelection({ userId: user.id, ids });
+    },
+    [user],
+  );
+  const refreshUser = useCallback(async () => {
+    const generation = epoch.current;
+    const current = await authService.getCurrentUser();
+    if (generation !== epoch.current) return;
+    if (current?.id !== user?.id) {
+      epoch.current += 1;
+      resetRequestScope();
       repositoryService.clearCache();
-      setUser(null);
-      setToken(null);
-      setUsername(null);
-      setIsAuthExpired(false);
-      setSelectedRepoNamesState([]);
     }
+    repositoryService.setAccount(current?.id || null);
+    setUser(current);
+  }, [user?.id]);
+  const redirectLogin = async (_value: string): Promise<User> => {
+    window.location.assign(`${import.meta.env.VITE_API_URL || '/api'}/auth/github/login`);
+    throw new Error('Redirecting to GitHub');
   };
-
-  const setSelectedRepoNames = useCallback((repos: string[]) => {
-    setSelectedRepoNamesState(repos);
-  }, []);
-
-  const refreshUser = async () => {
-    const currentUser = await authService.getCurrentUser();
-    setUser(currentUser);
-    setUsername(currentUser?.username || null);
-  };
-
+  const selectedRepoIds = user
+    ? selection?.userId === user.id
+      ? selection.ids
+      : readSelection(user.id)
+    : null;
   return (
     <AuthContext.Provider
       value={{
         user,
-        token,
-        username,
+        token: null,
+        username: user?.username || null,
         isAuthenticated: !!user && !isAuthExpired,
         isLoading,
         isAuthExpired,
-        triggerAuthExpired: () => {
-          setIsAuthExpired(true);
-          setUser(null);
-        },
-        selectedRepoNames,
-        loginWithToken,
-        loginWithUsername,
+        triggerAuthExpired: () => clearSession(true),
+        selectedRepoIds,
+        setSelectedRepoIds,
+        loginWithToken: redirectLogin,
+        loginWithUsername: redirectLogin,
         logout,
-        setSelectedRepoNames,
         refreshUser,
       }}
     >
@@ -125,12 +101,4 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       <SessionExpiredModal isOpen={isAuthExpired} />
     </AuthContext.Provider>
   );
-};
-
-export const useAuth = (): AuthContextType => {
-  const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
-  return context;
 };

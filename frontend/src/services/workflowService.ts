@@ -3,14 +3,19 @@ import apiClient from './apiClient';
 
 export const workflowService = {
   async getWorkflows(repoId: string): Promise<Workflow[]> {
-    const response = await apiClient.get<Workflow[]>(`/repositories/${repoId}/workflows/definitions`);
+    const response = await apiClient.get<Workflow[]>(
+      `/repositories/${encodeURIComponent(repoId)}/workflows/definitions`,
+    );
     return response.data;
   },
 
   async getWorkflowRuns(repoId: string, refresh = false): Promise<WorkflowRun[]> {
-    const response = await apiClient.get<WorkflowRun[]>(`/repositories/${encodeURIComponent(repoId)}/workflows`, {
-      params: refresh ? { refresh: true } : undefined,
-    });
+    const response = await apiClient.get<WorkflowRun[]>(
+      `/repositories/${encodeURIComponent(repoId)}/workflows`,
+      {
+        params: refresh ? { refresh: true } : undefined,
+      },
+    );
     return response.data;
   },
 
@@ -20,6 +25,8 @@ export const workflowService = {
   },
 
   async retryWorkflow(repoId: string, runId: string): Promise<void> {
-    await apiClient.post(`/repositories/${repoId}/workflows/${runId}/retry`);
-  }
+    await apiClient.post(
+      `/repositories/${encodeURIComponent(repoId)}/workflows/${encodeURIComponent(runId)}/retry`,
+    );
+  },
 };

@@ -3,11 +3,13 @@ import apiClient from './apiClient';
 
 export const teamService = {
   async getMembers(repoId: string): Promise<Collaborator[]> {
-    const response = await apiClient.get<Collaborator[]>(`/repositories/${repoId}/collaborators`);
+    const response = await apiClient.get<Collaborator[]>(
+      `/repositories/${encodeURIComponent(repoId)}/collaborators`,
+    );
     return response.data;
   },
 
-  async manageAccess(repoId: string, username: string, role: string): Promise<void> {
-    await new Promise(resolve => setTimeout(resolve, 300));
-  }
+  async manageAccess(_repoId: string, _username: string, _role: string): Promise<void> {
+    throw new Error('Manage repository collaborators directly on GitHub.');
+  },
 };

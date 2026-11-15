@@ -1,4 +1,7 @@
 import unittest
+from tests.support import configure_environment
+
+configure_environment()
 
 from app.services.evidence_graph import (
     build_evidence_graph,
@@ -40,19 +43,22 @@ class EvidenceGraphTests(unittest.TestCase):
                 for edge in graph["edges"]
             )
         )
-        self.assertTrue(any(candidate["event_id"] == config_event["event_id"] for candidate in graph["root_cause_candidates"]))
-        self.assertTrue(any(item["line_index"] == 0 for item in graph_context_line_candidates(graph)))
+        self.assertTrue(
+            any(
+                candidate["event_id"] == config_event["event_id"]
+                for candidate in graph["root_cause_candidates"]
+            )
+        )
+        self.assertTrue(
+            any(item["line_index"] == 0 for item in graph_context_line_candidates(graph))
+        )
         self.assertIn("not a probability", graph_prompt_context(graph))
 
         blocks, _ = preprocess_logs(
             logs,
             additional_candidates=graph_context_line_candidates(graph),
         )
-        captured_lines = {
-            line["line_number"]
-            for block in blocks
-            for line in block["lines"]
-        }
+        captured_lines = {line["line_number"] for block in blocks for line in block["lines"]}
         self.assertTrue({1, 105, 180, 245}.issubset(captured_lines))
 
     def test_dependency_failure_links_shared_package_to_build_failure(self):
@@ -64,7 +70,9 @@ class EvidenceGraphTests(unittest.TestCase):
 
         self.assertTrue(any(node["category"] == "dependency" for node in graph["nodes"]))
         self.assertTrue(any(node["category"] == "build" for node in graph["nodes"]))
-        self.assertTrue(any(edge["relationship_type"] == "POSSIBLY_CAUSES" for edge in graph["edges"]))
+        self.assertTrue(
+            any(edge["relationship_type"] == "POSSIBLY_CAUSES" for edge in graph["edges"])
+        )
 
     def test_independent_test_failures_remain_separate_causes(self):
         logs = (
@@ -75,7 +83,9 @@ class EvidenceGraphTests(unittest.TestCase):
 
         candidates = [node for node in graph["nodes"] if node["category"] == "testing"]
         self.assertEqual(len(candidates), 2)
-        self.assertFalse(any(edge["relationship_type"] == "POSSIBLY_CAUSES" for edge in graph["edges"]))
+        self.assertFalse(
+            any(edge["relationship_type"] == "POSSIBLY_CAUSES" for edge in graph["edges"])
+        )
         self.assertEqual(len(graph["root_cause_candidates"]), 2)
 
     def test_repeated_diagnostic_keeps_each_occurrence(self):
@@ -89,7 +99,10 @@ class EvidenceGraphTests(unittest.TestCase):
         event = next(node for node in graph["nodes"] if node["category"] == "dependency")
         self.assertEqual(event["line_start"], 1)
         self.assertEqual(event["line_end"], 1)
-        self.assertEqual(event["occurrences"], [{"line_start": 1, "line_end": 1}, {"line_start": 3, "line_end": 3}])
+        self.assertEqual(
+            event["occurrences"],
+            [{"line_start": 1, "line_end": 1}, {"line_start": 3, "line_end": 3}],
+        )
 
     def test_exit_without_diagnostic_has_no_root_cause_candidate(self):
         graph = build_evidence_graph("Process completed with exit code 1", run_id="run-5")
@@ -99,18 +112,18 @@ class EvidenceGraphTests(unittest.TestCase):
 
     def test_temporal_order_does_not_create_causal_edge(self):
         graph = build_evidence_graph(
-            "Database timeout occurred\n"
-            "Database connection refused",
+            "Database timeout occurred\nDatabase connection refused",
             run_id="run-6",
         )
 
         self.assertTrue(any(edge["relationship_type"] == "PRECEDES" for edge in graph["edges"]))
-        self.assertFalse(any(edge["relationship_type"] == "POSSIBLY_CAUSES" for edge in graph["edges"]))
+        self.assertFalse(
+            any(edge["relationship_type"] == "POSSIBLY_CAUSES" for edge in graph["edges"])
+        )
 
     def test_missing_timestamps_and_explicit_dependencies_are_supported(self):
         graph = build_evidence_graph(
-            "Database connection refused\n"
-            "Integration test failed; test runner requires database",
+            "Database connection refused\nIntegration test failed; test runner requires database",
             run_id="run-7",
         )
 
@@ -121,7 +134,13 @@ class EvidenceGraphTests(unittest.TestCase):
         graph = build_evidence_graph(
             "Missing environment variable API_TOKEN",
             run_id="run-8",
-            weights={"temporal": 0.1, "relevance": 0.3, "relationships": 0.2, "evidence": 0.4, "baseline": 0.0},
+            weights={
+                "temporal": 0.1,
+                "relevance": 0.3,
+                "relationships": 0.2,
+                "evidence": 0.4,
+                "baseline": 0.0,
+            },
         )
 
         candidate = graph["root_cause_candidates"][0]
@@ -169,8 +188,7 @@ class EvidenceGraphTests(unittest.TestCase):
 
     def test_api_graph_summary_keeps_candidates_without_duplicate_nodes(self):
         graph = build_evidence_graph(
-            "Missing environment variable API_TOKEN\n"
-            "RuntimeError: API_TOKEN was not set",
+            "Missing environment variable API_TOKEN\nRuntimeError: API_TOKEN was not set",
             run_id="run-10",
         )
 
@@ -178,8 +196,9 @@ class EvidenceGraphTests(unittest.TestCase):
         node_ids = [node["event_id"] for node in summary["nodes"]]
         self.assertEqual(len(node_ids), len(set(node_ids)))
         self.assertTrue(
-            set(candidate["event_id"] for candidate in summary["root_cause_candidates"])
-            .issubset(node_ids)
+            set(candidate["event_id"] for candidate in summary["root_cause_candidates"]).issubset(
+                node_ids
+            )
         )
 
 

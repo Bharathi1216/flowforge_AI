@@ -1,22 +1,33 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import axios from 'axios';
+import {
+  AlertTriangle,
+  CheckCircle2,
+  FolderGit2,
+  LogIn,
+  Plus,
+  RefreshCw,
+  Search,
+  X,
+  XCircle,
+} from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Search, Plus, FolderGit2, CheckCircle2, AlertTriangle, XCircle, RefreshCw, X, LogIn } from 'lucide-react';
-import { repositoryService } from '../services/repositoryService';
-import { useQuery } from '@tanstack/react-query';
-import { RepoCard } from '../components/RepoCard';
 import { AddRepositoryModal } from '../components/AddRepositoryModal';
 import { GitHubConnectModal } from '../components/GitHubConnectModal';
+import { RepoCard } from '../components/RepoCard';
 import { StatCard } from '../components/StatCard';
-import { useAuth } from '../contexts/AuthContext';
-import { useToast } from '../contexts/ToastContext';
+import { useAuth } from '../contexts/authState';
+import { useToast } from '../contexts/toastState';
+import { repositoryService } from '../services/repositoryService';
 
 export const Dashboard: React.FC = () => {
   const [searchParams] = useSearchParams();
-  const { user, selectedRepoNames, setSelectedRepoNames, isAuthenticated, logout } = useAuth();
+  const { user, selectedRepoIds, setSelectedRepoIds, isAuthenticated, logout } = useAuth();
   const { info } = useToast();
 
-  const [refreshVersion, setRefreshVersion] = useState(0);
+  const queryClient = useQueryClient();
+  const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState('');
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isConnectModalOpen, setIsConnectModalOpen] = useState(false);
@@ -26,10 +37,8 @@ export const Dashboard: React.FC = () => {
     isLoading: loading,
     error: repositoryError,
   } = useQuery({
-    queryKey: ['repositories', user?.id, refreshVersion],
-    queryFn: () => repositoryService.getRepositories(refreshVersion > 0),
+    ...repositoryService.queryOptions(user?.id || ''),
     enabled: Boolean(user),
-    placeholderData: (previousData) => previousData,
   });
 
   const authConnected = searchParams.get('auth') === 'connected';
@@ -38,15 +47,28 @@ export const Dashboard: React.FC = () => {
     if (!authConnected) return;
     const callbackUrl = new URL(window.location.href);
     callbackUrl.searchParams.delete('auth');
-    window.history.replaceState(window.history.state, '', `${callbackUrl.pathname}${callbackUrl.search}${callbackUrl.hash}`);
+    window.history.replaceState(
+      window.history.state,
+      '',
+      `${callbackUrl.pathname}${callbackUrl.search}${callbackUrl.hash}`,
+    );
   }, [authConnected]);
 
-  const refreshRepositories = () => {
-    setRefreshVersion((version) => version + 1);
+  const refreshRepositories = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
     info('Refreshing repositories from GitHub');
+    try {
+      await repositoryService.getRepositories(true);
+      await queryClient.invalidateQueries({ queryKey: ['workflow-runs', user?.id] });
+    } finally {
+      setRefreshing(false);
+    }
   };
 
-  const errorStatus = axios.isAxiosError(repositoryError) ? repositoryError.response?.status : undefined;
+  const errorStatus = axios.isAxiosError(repositoryError)
+    ? repositoryError.response?.status
+    : undefined;
   const loadError = repositoryError
     ? errorStatus === 401
       ? 'session'
@@ -61,14 +83,13 @@ export const Dashboard: React.FC = () => {
   };
 
   const handleSavePermissions = (enabledNames: string[]) => {
-    setSelectedRepoNames(enabledNames);
+    setSelectedRepoIds(enabledNames);
   };
 
   const displayedRepos = useMemo(() => {
     const term = search.trim().toLowerCase();
     return repositories.filter((r) => {
-      const isAuthorized =
-        selectedRepoNames.length === 0 || selectedRepoNames.includes(r.name);
+      const isAuthorized = selectedRepoIds === null || selectedRepoIds.includes(r.id);
       const matchesSearch =
         !term ||
         r.name.toLowerCase().includes(term) ||
@@ -76,13 +97,13 @@ export const Dashboard: React.FC = () => {
         (r.description && r.description.toLowerCase().includes(term));
       return isAuthorized && matchesSearch;
     });
-  }, [repositories, selectedRepoNames, search]);
+  }, [repositories, selectedRepoIds, search]);
 
   const totalConnected = displayedRepos.length;
   const passedCount = displayedRepos.filter((r) => r.lastWorkflowStatus === 'success').length;
   const failedCount = displayedRepos.filter((r) => r.lastWorkflowStatus === 'failed').length;
   const runningCount = displayedRepos.filter(
-    (r) => r.lastWorkflowStatus === 'running' || r.lastWorkflowStatus === 'warning'
+    (r) => r.lastWorkflowStatus === 'running' || r.lastWorkflowStatus === 'warning',
   ).length;
 
   if (loading) {
@@ -97,15 +118,25 @@ export const Dashboard: React.FC = () => {
   return (
     <div className="space-y-8 max-w-7xl mx-auto py-2">
       {authConnected && (
-        <p className="rounded-lg border border-emerald-500/30 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800 dark:bg-emerald-950/20 dark:text-emerald-200" role="status">
+        <p
+          className="rounded-lg border border-emerald-500/30 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800 dark:bg-emerald-950/20 dark:text-emerald-200"
+          role="status"
+        >
           You are signed in with GitHub. Your repositories are loading.
         </p>
       )}
       {loadError && (
-        <section className="flex flex-col gap-4 rounded-xl border border-amber-500/30 bg-amber-50 p-4 dark:bg-amber-950/20 sm:flex-row sm:items-center sm:justify-between" role="alert">
+        <section
+          className="flex flex-col gap-4 rounded-xl border border-amber-500/30 bg-amber-50 p-4 dark:bg-amber-950/20 sm:flex-row sm:items-center sm:justify-between"
+          role="alert"
+        >
           <div>
             <h2 className="text-sm font-bold text-slate-900 dark:text-white">
-              {loadError === 'session' ? 'Your sign-in has expired' : loadError === 'access' ? 'GitHub access is limited' : 'Repositories could not be loaded'}
+              {loadError === 'session'
+                ? 'Your sign-in has expired'
+                : loadError === 'access'
+                  ? 'GitHub access is limited'
+                  : 'Repositories could not be loaded'}
             </h2>
             <p className="mt-1 max-w-2xl text-xs leading-relaxed text-slate-600 dark:text-slate-300">
               {loadError === 'session'
@@ -116,15 +147,26 @@ export const Dashboard: React.FC = () => {
             </p>
           </div>
           {loadError === 'session' ? (
-            <button onClick={handleSwitchAccount} className="shrink-0 rounded-lg bg-purple-600 px-4 py-2.5 text-xs font-bold text-white hover:bg-purple-700">
+            <button
+              onClick={handleSwitchAccount}
+              className="shrink-0 rounded-lg bg-purple-600 px-4 py-2.5 text-xs font-bold text-white hover:bg-purple-700"
+            >
               Continue with GitHub
             </button>
           ) : loadError === 'access' ? (
-            <a href="https://github.com/settings/applications" target="_blank" rel="noreferrer" className="shrink-0 rounded-lg border border-slate-300 px-4 py-2.5 text-center text-xs font-bold text-slate-700 hover:bg-white dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-900">
+            <a
+              href="https://github.com/settings/applications"
+              target="_blank"
+              rel="noreferrer"
+              className="shrink-0 rounded-lg border border-slate-300 px-4 py-2.5 text-center text-xs font-bold text-slate-700 hover:bg-white dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-900"
+            >
               Review GitHub access
             </a>
           ) : (
-            <button onClick={refreshRepositories} className="shrink-0 rounded-lg border border-slate-300 px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-white dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-900">
+            <button
+              onClick={refreshRepositories}
+              className="shrink-0 rounded-lg border border-slate-300 px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-white dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-900"
+            >
               Try again
             </button>
           )}
@@ -164,8 +206,12 @@ export const Dashboard: React.FC = () => {
       </div>
 
       {repositories.some((repository) => repository.lastWorkflowStatus === 'unknown') && (
-        <p className="-mt-5 text-xs leading-relaxed text-slate-500 dark:text-slate-400" role="status">
-          Some repositories do not have workflow data available yet. Actions may be disabled or GitHub may limit access; other available repositories remain usable.
+        <p
+          className="-mt-5 text-xs leading-relaxed text-slate-500 dark:text-slate-400"
+          role="status"
+        >
+          Some repositories do not have workflow data available yet. Actions may be disabled or
+          GitHub may limit access; other available repositories remain usable.
         </p>
       )}
 
@@ -178,7 +224,9 @@ export const Dashboard: React.FC = () => {
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
             {user ? (
               <span>
-                Connected as <strong className="text-purple-600 dark:text-purple-400">@{user.username}</strong>. Select a repository to inspect GitHub Actions and logs.
+                Connected as{' '}
+                <strong className="text-purple-600 dark:text-purple-400">@{user.username}</strong>.
+                Select a repository to inspect GitHub Actions and logs.
               </span>
             ) : (
               'Connect your GitHub account to monitor real repositories and workflows.'
@@ -263,16 +311,26 @@ export const Dashboard: React.FC = () => {
           </div>
           {repositories.length === 0 && !search.trim() ? (
             <div className="flex flex-wrap justify-center gap-3">
-              <a href="https://github.com/new" target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-lg bg-purple-600 px-5 py-2.5 text-xs font-bold text-white hover:bg-purple-700">
+              <a
+                href="https://github.com/new"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-2 rounded-lg bg-purple-600 px-5 py-2.5 text-xs font-bold text-white hover:bg-purple-700"
+              >
                 Create a GitHub repository
               </a>
-              <button onClick={handleSwitchAccount} className="rounded-lg border border-slate-300 px-5 py-2.5 text-xs font-bold text-slate-700 hover:bg-white dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-900">
+              <button
+                onClick={handleSwitchAccount}
+                className="rounded-lg border border-slate-300 px-5 py-2.5 text-xs font-bold text-slate-700 hover:bg-white dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-900"
+              >
                 Use another account
               </button>
             </div>
           ) : (
             <button
-              onClick={() => (isAuthenticated ? setIsAddModalOpen(true) : setIsConnectModalOpen(true))}
+              onClick={() =>
+                isAuthenticated ? setIsAddModalOpen(true) : setIsConnectModalOpen(true)
+              }
               className="inline-flex items-center gap-2 rounded-lg bg-purple-600 hover:bg-purple-700 px-5 py-2.5 text-xs font-bold text-white shadow-md transition-all"
             >
               {isAuthenticated ? <Plus className="h-4 w-4" /> : <LogIn className="h-4 w-4" />}
@@ -292,7 +350,7 @@ export const Dashboard: React.FC = () => {
       <AddRepositoryModal
         isOpen={isAddModalOpen}
         onClose={() => setIsAddModalOpen(false)}
-        connectedRepoNames={selectedRepoNames}
+        connectedRepoIds={selectedRepoIds}
         onSavePermissions={handleSavePermissions}
       />
 

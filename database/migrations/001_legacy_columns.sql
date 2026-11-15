@@ -1,0 +1,13 @@
+ALTER TABLE discussions ADD COLUMN IF NOT EXISTS github_issue_number INTEGER;
+ALTER TABLE discussion_comments ADD COLUMN IF NOT EXISTS github_comment_id VARCHAR(100);
+ALTER TABLE failure_logs ADD COLUMN IF NOT EXISTS failure_fingerprint VARCHAR(255);
+ALTER TABLE failure_logs ADD COLUMN IF NOT EXISTS structured_failure TEXT;
+ALTER TABLE failure_logs ADD COLUMN IF NOT EXISTS important_log_blocks TEXT;
+ALTER TABLE failure_logs ADD COLUMN IF NOT EXISTS evidence TEXT;
+ALTER TABLE failure_logs ADD COLUMN IF NOT EXISTS analysis_status VARCHAR(50);
+ALTER TABLE failure_logs ADD COLUMN IF NOT EXISTS model VARCHAR(100);
+ALTER TABLE failure_logs ADD COLUMN IF NOT EXISTS prompt_version VARCHAR(50);
+ALTER TABLE failure_logs ADD COLUMN IF NOT EXISTS analysis_result TEXT;
+ALTER TABLE failure_logs ADD COLUMN IF NOT EXISTS provider_results TEXT;
+ALTER TABLE failure_logs ADD COLUMN IF NOT EXISTS gemini_result TEXT;
+ALTER TABLE failure_logs ADD COLUMN IF NOT EXISTS groq_result TEXT;

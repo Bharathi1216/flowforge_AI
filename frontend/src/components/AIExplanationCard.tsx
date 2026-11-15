@@ -1,13 +1,18 @@
+import { ArrowRight, Sparkles } from 'lucide-react';
 import React from 'react';
-import { Sparkles, ArrowRight } from 'lucide-react';
-import { useAIAssistant } from '../contexts/AIAssistantContext';
+import { useAIAssistant } from '../contexts/assistantState';
 
 interface AIExplanationCardProps {
+  repoId?: string;
   summary: string;
   rootCause?: string;
 }
 
-export const AIExplanationCard: React.FC<AIExplanationCardProps> = ({ summary, rootCause }) => {
+export const AIExplanationCard: React.FC<AIExplanationCardProps> = ({
+  summary,
+  rootCause,
+  repoId,
+}) => {
   const { openAssistant } = useAIAssistant();
 
   return (
@@ -23,7 +28,9 @@ export const AIExplanationCard: React.FC<AIExplanationCardProps> = ({ summary, r
         </div>
 
         <button
-          onClick={() => openAssistant(`Explain this root cause in detail: ${rootCause || summary}`)}
+          onClick={() =>
+            openAssistant(`Explain this root cause in detail: ${rootCause || summary}`, repoId)
+          }
           className="flex items-center gap-1 text-[11px] font-bold text-purple-700 dark:text-purple-300 hover:text-purple-900 dark:hover:text-purple-100 transition-colors"
         >
           <span>Ask AI Assistant</span>

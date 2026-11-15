@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from 'react';
-import { Navigate, useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { AlertCircle, ArrowRight, FolderGit2, ShieldCheck } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Navigate, useSearchParams } from 'react-router-dom';
 import { GithubIcon } from '../components/GithubIcon';
-import { useAuth } from '../contexts/AuthContext';
+import { useAuth } from '../contexts/authState';
 
 export const LandingPage: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -15,7 +15,7 @@ export const LandingPage: React.FC = () => {
     if (oauthError && isAuthenticated) {
       logout();
     }
-  }, [oauthError, isAuthenticated]);
+  }, [oauthError, isAuthenticated, logout]);
 
   if (isLoading) {
     return (
@@ -31,10 +31,12 @@ export const LandingPage: React.FC = () => {
   if (isAuthenticated && !oauthError) return <Navigate to="/dashboard" replace />;
 
   const errorMessages: Record<string, string> = {
-    access_denied: 'GitHub access was not granted. FlowForge needs GitHub access to load repository and workflow features. Review the permissions on GitHub before approving, then try again whenever you are ready.',
+    access_denied:
+      'GitHub access was not granted. FlowForge needs GitHub access to load repository and workflow features. Review the permissions on GitHub before approving, then try again whenever you are ready.',
     invalid_state: 'This sign-in attempt expired or could not be verified. Please start again.',
     unavailable: 'GitHub sign-in is not available for this deployment yet. Please try again later.',
-    github_unavailable: 'GitHub could not complete sign-in just now. Check your connection and try again.',
+    github_unavailable:
+      'GitHub could not complete sign-in just now. Check your connection and try again.',
     session_expired: 'Your session has expired. Continue with GitHub to reconnect your account.',
     failed: 'We could not sign you in with GitHub. Please try again.',
   };
@@ -82,7 +84,11 @@ export const LandingPage: React.FC = () => {
         >
           {/* Badge */}
           {errorMessage && (
-            <div className="flex max-w-xl items-start gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-left text-sm text-rose-100" role="alert" aria-live="polite">
+            <div
+              className="flex max-w-xl items-start gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-left text-sm text-rose-100"
+              role="alert"
+              aria-live="polite"
+            >
               <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-rose-300" />
               <div>
                 <p className="font-semibold">We couldn’t sign you in with GitHub</p>
@@ -97,12 +103,12 @@ export const LandingPage: React.FC = () => {
 
           {/* Headline */}
           <h1 className="text-4xl sm:text-6xl font-black tracking-tight text-white leading-tight font-heading">
-            Your intelligence layer for{' '}
-            <span className="text-purple-400">GitHub Actions</span>
+            Your intelligence layer for <span className="text-purple-400">GitHub Actions</span>
           </h1>
 
           <p className="text-base sm:text-lg text-slate-300 max-w-xl leading-relaxed font-sans">
-            Connect your GitHub repositories to diagnose CI/CD failures, trace workflow logs, and collaborate on fixes.
+            Connect your GitHub repositories to diagnose CI/CD failures, trace workflow logs, and
+            collaborate on fixes.
           </p>
 
           {/* Primary Action Buttons */}
@@ -116,13 +122,20 @@ export const LandingPage: React.FC = () => {
               <span>{isRedirecting ? 'Connecting to GitHub...' : 'Continue with GitHub'}</span>
               <ArrowRight className="h-4 w-4 text-slate-600 group-hover:translate-x-1 transition-transform" />
             </button>
-            <a href="#access" className="text-sm font-semibold text-slate-300 underline decoration-slate-600 underline-offset-4 hover:text-white">
+            <a
+              href="#access"
+              className="text-sm font-semibold text-slate-300 underline decoration-slate-600 underline-offset-4 hover:text-white"
+            >
               How access works
             </a>
 
             <div id="access" className="flex max-w-md items-start gap-1.5 text-xs text-slate-400">
               <ShieldCheck className="h-4 w-4 text-purple-400" />
-              <span>We use your GitHub authorization for repository and workflow features. Review the full permissions shown by GitHub before approving; you can revoke access from your GitHub settings.</span>
+              <span>
+                We use your GitHub authorization for repository and workflow features. Review the
+                full permissions shown by GitHub before approving; you can revoke access from your
+                GitHub settings.
+              </span>
             </div>
           </div>
         </motion.div>
@@ -137,7 +150,6 @@ export const LandingPage: React.FC = () => {
           <span>Live Workflow Tracing</span>
         </div>
       </footer>
-
     </div>
   );
 };

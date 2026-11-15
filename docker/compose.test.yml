@@ -1,0 +1,14 @@
+services:
+  database:
+    image: pgvector/pgvector:pg17
+    ports:
+      - "127.0.0.1:55432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: flowforge-test-only
+      POSTGRES_DB: flowforge_audit
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d flowforge_audit"]
+      interval: 2s
+      timeout: 2s
+      retries: 20

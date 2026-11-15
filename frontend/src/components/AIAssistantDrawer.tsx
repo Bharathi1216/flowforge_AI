@@ -1,15 +1,28 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  Sparkles, X, Send, Bot, User, RefreshCw, Copy, Check, 
-  Terminal, ArrowRight, MessageSquarePlus, Trash2, Cpu,
-  CheckCircle2, AlertCircle, ShieldCheck, Zap
+import { useQuery } from '@tanstack/react-query';
+import { AnimatePresence, motion } from 'framer-motion';
+import {
+  Bot,
+  Check,
+  Copy,
+  Cpu,
+  MessageSquarePlus,
+  RefreshCw,
+  Send,
+  ShieldCheck,
+  Sparkles,
+  Terminal,
+  Trash2,
+  User,
+  X,
+  Zap,
 } from 'lucide-react';
-import { useAIAssistant } from '../contexts/AIAssistantContext';
-import { useAuth } from '../contexts/AuthContext';
-import { useToast } from '../contexts/ToastContext';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useAIAssistant } from '../contexts/assistantState';
+import { useAuth } from '../contexts/authState';
+import { useToast } from '../contexts/toastState';
 import { aiService } from '../services/aiService';
+import { repositoryService } from '../services/repositoryService';
 
 interface Message {
   id: string;
@@ -20,108 +33,136 @@ interface Message {
 }
 
 export const AIAssistantDrawer: React.FC = () => {
-  const { isOpen, closeAssistant, currentRepoContext, initialPrompt, setInitialPrompt } = useAIAssistant();
+  const { currentRepoContext } = useAIAssistant();
+  return <AssistantSession key={currentRepoContext || 'none'} />;
+};
+
+const AssistantSession: React.FC = () => {
+  const {
+    isOpen,
+    closeAssistant,
+    currentRepoContext,
+    initialPrompt,
+    setInitialPrompt,
+    conversations,
+    updateMessages,
+  } = useAIAssistant();
   const { user } = useAuth();
-  const { success } = useToast();
+  const { success, error: showError } = useToast();
   const navigate = useNavigate();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const activeRepo = currentRepoContext || 'FlowForge-AI';
+  const repoId = currentRepoContext || '';
+  const repoQuery = useQuery({
+    ...repositoryService.repositoryOptions(user?.id || '', repoId),
+    enabled: !!repoId && !!user,
+  });
+  const activeRepo = repoQuery.data?.name || 'your repository';
   const userName = user?.name || user?.username || 'developer';
-
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: 'welcome',
-      role: 'assistant',
-      content: `Hello ${userName}! I am your FlowForge AI Assistant for **${activeRepo}**.\n\nI can analyze your GitHub Actions build failures, explain CI run errors, generate workflow YAML patches, or answer questions about repository health.`,
-      codeSnippet: `# Quick diagnostic check for ${activeRepo}\n# Monitored via FlowForge AI & GitHub Actions`,
-      timestamp: 'Just now'
-    }
-  ]);
+  const messages = React.useMemo(() => conversations[repoId] || [], [conversations, repoId]);
+  const setMessages = useCallback(
+    (update: React.SetStateAction<Message[]>) => {
+      updateMessages(repoId, (previous) =>
+        typeof update === 'function' ? update(previous) : update,
+      );
+    },
+    [repoId, updateMessages],
+  );
+  const sending = useRef(false);
   const [inputValue, setInputValue] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [copiedCodeId, setCopiedCodeId] = useState<string | null>(null);
-  const [selectedEngine] = useState<'flowforge-agent'>('flowforge-agent');
-
-  // Handle initial prompt passed when opening
-  useEffect(() => {
-    if (isOpen) {
-      if (initialPrompt) {
-        handleSendMessage(initialPrompt);
-        setInitialPrompt(null);
-      }
-      setTimeout(() => {
-        inputRef.current?.focus();
-      }, 300);
-    }
-  }, [isOpen, initialPrompt]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isTyping]);
 
   const quickPrompts = [
-    { label: 'Diagnose workflow failure', prompt: `Why did the latest CI workflow run fail for ${activeRepo} and how do I fix it?` },
-    { label: 'Generate workflow patch', prompt: `Provide a workflow fix or patch for recent failures in ${activeRepo}.` },
-    { label: 'Who touched this module?', prompt: `Who are the active contributors for ${activeRepo}?` },
-    { label: 'Summarize pipeline health', prompt: `Summarize recent workflow runs and health for ${activeRepo}.` }
+    {
+      label: 'Diagnose workflow failure',
+      prompt: `Why did the latest CI workflow run fail for ${activeRepo} and how do I fix it?`,
+    },
+    {
+      label: 'Generate workflow patch',
+      prompt: `Provide a workflow fix or patch for recent failures in ${activeRepo}.`,
+    },
+    {
+      label: 'Who touched this module?',
+      prompt: `Who are the active contributors for ${activeRepo}?`,
+    },
+    {
+      label: 'Summarize pipeline health',
+      prompt: `Summarize recent workflow runs and health for ${activeRepo}.`,
+    },
   ];
 
-  const handleSendMessage = async (textToSend?: string) => {
-    const text = textToSend || inputValue;
-    if (!text.trim()) return;
+  const handleSendMessage = useCallback(
+    async (textToSend?: string) => {
+      const text = textToSend || inputValue;
+      if (!text.trim() || !repoId || sending.current) return;
+      sending.current = true;
 
-    const userMessage: Message = {
-      id: Date.now().toString(),
-      role: 'user',
-      content: text,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    };
-
-    const newMessages = [...messages, userMessage];
-    setMessages(newMessages);
-    setInputValue('');
-    setIsTyping(true);
-
-    try {
-      const response = await aiService.chatWithAssistant(
-        activeRepo,
-        newMessages.map((m) => ({
-          id: m.id,
-          role: m.role,
-          content: m.content,
-          timestamp: m.timestamp,
-        }))
-      );
-
-      // Extract code block if present
-      const codeMatch = response.content.match(/```(?:[a-zA-Z]+)?\s*([\s\S]*?)```/);
-      const extractedCode = codeMatch ? codeMatch[1].trim() : undefined;
-      const cleanContent = response.content.replace(/```(?:[a-zA-Z]+)?\s*([\s\S]*?)```/g, '').trim() || response.content;
-
-      const aiMessage: Message = {
-        id: response.id || (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: cleanContent,
-        codeSnippet: extractedCode,
-        timestamp: response.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      const userMessage: Message = {
+        id: Date.now().toString(),
+        role: 'user',
+        content: text,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       };
-      setMessages((prev) => [...prev, aiMessage]);
-    } catch {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: (Date.now() + 1).toString(),
+
+      const newMessages = [...messages, userMessage];
+      setMessages(newMessages);
+      setInputValue('');
+      setIsTyping(true);
+
+      try {
+        const response = await aiService.chatWithAssistant(
+          repoId,
+          newMessages.map((m) => ({
+            id: m.id,
+            role: m.role,
+            content: m.content,
+            timestamp: m.timestamp,
+          })),
+        );
+
+        // Extract code block if present
+        const codeMatch = response.content.match(/```(?:[a-zA-Z]+)?\s*([\s\S]*?)```/);
+        const extractedCode = codeMatch ? codeMatch[1].trim() : undefined;
+        const cleanContent =
+          response.content.replace(/```(?:[a-zA-Z]+)?\s*([\s\S]*?)```/g, '').trim() ||
+          response.content;
+
+        const aiMessage: Message = {
+          id: response.id || (Date.now() + 1).toString(),
           role: 'assistant',
-          content: `I analyzed ${activeRepo}. You can review failure logs in the Failure Analysis tab or rerun jobs.`,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        }
-      ]);
-    } finally {
-      setIsTyping(false);
-    }
-  };
+          content: cleanContent,
+          codeSnippet: extractedCode,
+          timestamp:
+            response.timestamp ||
+            new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        };
+        setMessages((prev) => [...prev, aiMessage]);
+      } catch {
+        showError('The assistant could not respond. Please try again.', 'Assistant unavailable');
+      } finally {
+        sending.current = false;
+        setIsTyping(false);
+      }
+    },
+    [inputValue, repoId, messages, setMessages, showError],
+  );
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      inputRef.current?.focus();
+      if (isOpen && initialPrompt && repoId) {
+        setInitialPrompt(null);
+        void handleSendMessage(initialPrompt);
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [isOpen, initialPrompt, repoId, setInitialPrompt, handleSendMessage]);
 
   const handleCopyCode = (code: string, id: string) => {
     navigator.clipboard.writeText(code);
@@ -131,9 +172,17 @@ export const AIAssistantDrawer: React.FC = () => {
   };
 
   const handlePushToThread = (msg: Message) => {
-    navigate(`/repositories/${activeRepo}/threads`);
+    navigate(`/repositories/${encodeURIComponent(repoId)}/threads`, {
+      state: {
+        draft: {
+          id: crypto.randomUUID(),
+          title: 'AI discussion',
+          content: `${msg.content}\n\n${msg.codeSnippet || ''}`,
+        },
+      },
+    });
     closeAssistant();
-    success(`AI solution ready to publish in ${activeRepo} Discussion Hub`, 'Pushed to Threads');
+    success('Review the discussion draft before publishing.', 'Draft prepared');
   };
 
   const handleClearChat = () => {
@@ -142,8 +191,8 @@ export const AIAssistantDrawer: React.FC = () => {
         id: 'welcome-reset',
         role: 'assistant',
         content: `Chat history cleared. How can I assist you with **${activeRepo}**?`,
-        timestamp: 'Just now'
-      }
+        timestamp: 'Just now',
+      },
     ]);
   };
 
@@ -184,11 +233,15 @@ export const AIAssistantDrawer: React.FC = () => {
                       </h2>
                       <span className="flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 font-mono">
                         <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-ping" />
-                        RAG Grounded
+                        Repository Assistant
                       </span>
                     </div>
                     <p className="text-[11px] text-slate-500 dark:text-slate-400 font-mono mt-0.5">
-                      Context: <span className="font-bold text-purple-600 dark:text-purple-400">{activeRepo}</span> (branch: main)
+                      Context:{' '}
+                      <span className="font-bold text-purple-600 dark:text-purple-400">
+                        {activeRepo}
+                      </span>{' '}
+                      (branch: main)
                     </p>
                   </div>
                 </div>
@@ -215,17 +268,29 @@ export const AIAssistantDrawer: React.FC = () => {
               <div className="mt-3 flex items-center justify-between text-[11px] pt-2.5 border-t border-slate-200 dark:border-slate-800/80">
                 <div className="flex items-center gap-1.5 text-slate-600 dark:text-slate-400">
                   <Cpu className="h-3.5 w-3.5 text-purple-500" />
-                  <span>Engine: <b className="text-purple-600 dark:text-purple-400 font-bold">FlowForge Agent (Active)</b></span>
+                  <span>
+                    Engine:{' '}
+                    <b className="text-purple-600 dark:text-purple-400 font-bold">
+                      FlowForge Agent (Active)
+                    </b>
+                  </span>
                 </div>
                 <div className="flex items-center gap-1 text-[10px] text-slate-500 dark:text-slate-400 font-mono">
                   <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" />
-                  <span>Repo AST Indexed</span>
+                  <span>Repository context</span>
                 </div>
               </div>
             </div>
 
             {/* 2. Messages Stream */}
             <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4 scrollbar-terminal bg-slate-50/40 dark:bg-[#080B12]">
+              {messages.length === 0 && (
+                <p className="p-4 text-xs text-slate-500">
+                  {repoId
+                    ? `Hello ${userName}. Ask about ${activeRepo}.`
+                    : 'Open a repository to start a conversation.'}
+                </p>
+              )}
               {messages.map((m) => {
                 const isUser = m.role === 'user';
                 return (
@@ -369,7 +434,12 @@ export const AIAssistantDrawer: React.FC = () => {
               </form>
               <div className="mt-2 flex items-center justify-between text-[10px] text-slate-500 dark:text-slate-400 font-mono">
                 <span>Press Enter to send</span>
-                <span>Shortcut: <kbd className="px-1 py-0.5 rounded bg-slate-200 dark:bg-slate-800 border border-slate-300 dark:border-slate-700">⌘J</kbd></span>
+                <span>
+                  Shortcut:{' '}
+                  <kbd className="px-1 py-0.5 rounded bg-slate-200 dark:bg-slate-800 border border-slate-300 dark:border-slate-700">
+                    ⌘J
+                  </kbd>
+                </span>
               </div>
             </div>
           </motion.div>

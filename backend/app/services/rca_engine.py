@@ -1,5 +1,6 @@
 import asyncio
 import json
+import math
 import logging
 import re
 from typing import Any, Optional
@@ -139,9 +140,17 @@ def _build_rca_prompt(
             f"--- Critical Block #{idx} (Lines {b.get('start_line')}-{b.get('end_line')}, Importance Score: {b.get('importance_score', 0)}) ---\n"
             f"{b.get('text', '')}"
         )
-    blocks_text = "\n\n".join(blocks_formatted) if blocks_formatted else "No highlighted log blocks available."
+    blocks_text = (
+        "\n\n".join(blocks_formatted)
+        if blocks_formatted
+        else "No highlighted log blocks available."
+    )
 
-    diff_text = "\n".join(f"- {d}" for d in differences) if differences else "- No differences recorded against successful baseline."
+    diff_text = (
+        "\n".join(f"- {d}" for d in differences)
+        if differences
+        else "- No differences recorded against successful baseline."
+    )
 
     precedents_formatted = []
     for p in historical_precedents:
@@ -157,7 +166,11 @@ def _build_rca_prompt(
                 f"  Suggested Fix: {p.get('suggestedFix') or 'N/A'}"
             )
         precedents_formatted.append(precedent)
-    precedents_text = "\n".join(precedents_formatted) if precedents_formatted else "- No similar historical precedents found in repository memory."
+    precedents_text = (
+        "\n".join(precedents_formatted)
+        if precedents_formatted
+        else "- No similar historical precedents found in repository memory."
+    )
     graph_text = (
         graph_prompt_context(evidence_graph)
         if evidence_graph
@@ -204,13 +217,13 @@ Your objective is to perform rigorous, fine-tuned root cause analysis on a faile
 - Failed Step: {failed_step}
 - Branch: {branch}
 - Commit: {commit_sha}
-- Target Language: {structured_failure.get('language', 'unknown')}
+- Target Language: {structured_failure.get("language", "unknown")}
 
 ### DETERMINISTIC FAILURE SIGNATURE:
-- Error Type: {structured_failure.get('error_type', 'Unknown')}
-- Error Message: {structured_failure.get('error_message', 'Unknown')}
-- Failing File / Line: {structured_failure.get('file_path', 'None')}:{structured_failure.get('line_number', 'None')}
-- Exit Code: {structured_failure.get('exit_code', 1)}
+- Error Type: {structured_failure.get("error_type", "Unknown")}
+- Error Message: {structured_failure.get("error_message", "Unknown")}
+- Failing File / Line: {structured_failure.get("file_path", "None")}:{structured_failure.get("line_number", "None")}
+- Exit Code: {structured_failure.get("exit_code", 1)}
 
 ### PREPROCESSED CRITICAL LOG BLOCKS (Expanded context with 1-indexed lines):
 {blocks_text}
@@ -243,7 +256,11 @@ def _heuristic_fallback(
     line_num = structured_failure.get("line_number")
     exit_code = structured_failure.get("exit_code", 1)
 
-    location_str = f" in {file_path}:{line_num}" if file_path and line_num else (f" in {file_path}" if file_path else "")
+    location_str = (
+        f" in {file_path}:{line_num}"
+        if file_path and line_num
+        else (f" in {file_path}" if file_path else "")
+    )
 
     evidence = []
     for b in important_blocks:
@@ -258,7 +275,9 @@ def _heuristic_fallback(
     if not evidence and important_blocks:
         first_b = important_blocks[0]
         if first_b.get("lines"):
-            evidence.append(f"Line {first_b['lines'][0]['line_number']}: {first_b['lines'][0]['text'].strip()}")
+            evidence.append(
+                f"Line {first_b['lines'][0]['line_number']}: {first_b['lines'][0]['text'].strip()}"
+            )
 
     if not evidence:
         evidence.append(f"Execution of step '{failed_step}' terminated with exit code {exit_code}.")
@@ -321,7 +340,9 @@ def _heuristic_fallback(
         confidence = 0.90
 
     elif "keyerror" in err_lower or "secret" in err_lower or "not set" in err_lower:
-        var_match = re.search(r"['\"]?([A-Za-z0-9_]+(?:URL|KEY|TOKEN|SECRET|ID|ENV))['\"]?", err_msg)
+        var_match = re.search(
+            r"['\"]?([A-Za-z0-9_]+(?:URL|KEY|TOKEN|SECRET|ID|ENV))['\"]?", err_msg
+        )
         var_name = var_match.group(1) if var_match else "REQUIRED_SECRET"
         suggested_fix = (
             f"1. In GitHub Repository Settings -> Secrets and variables -> Actions, configure `{var_name}`.\n"
@@ -353,12 +374,12 @@ def _heuristic_fallback(
 
     elif "eacces" in err_lower or "permission denied" in err_lower:
         suggested_fix = (
-            f"1. Add executable permissions to script files in your workflow: `chmod +x <script_path>`.\n"
-            f"2. Avoid writing to protected root paths without appropriate runner privileges."
+            "1. Add executable permissions to script files in your workflow: `chmod +x <script_path>`.\n"
+            "2. Avoid writing to protected root paths without appropriate runner privileges."
         )
         root_causes = [
             f"Permission denied during execution of step '{failed_step}'.",
-            f"Runner process lacked required filesystem permissions.",
+            "Runner process lacked required filesystem permissions.",
         ]
         confidence = 0.94
 
@@ -376,10 +397,12 @@ def _heuristic_fallback(
 
     log_analysis = []
     for b in important_blocks[:2]:
-        log_analysis.append({
-            "error_logs": [[b.get("start_line", 1), b.get("end_line", 1)]],
-            "analysis": f"Step '{failed_step}' encountered termination trigger: {', '.join(b.get('reasons', ['process_failure']))}."
-        })
+        log_analysis.append(
+            {
+                "error_logs": [[b.get("start_line", 1), b.get("end_line", 1)]],
+                "analysis": f"Step '{failed_step}' encountered termination trigger: {', '.join(b.get('reasons', ['process_failure']))}.",
+            }
+        )
 
     return {
         "log_analysis": log_analysis,
@@ -392,7 +415,7 @@ def _heuristic_fallback(
     }
 
 
-def _parse_and_validate_rca_json(raw_text: str) -> dict[str, Any]:
+def _parse_and_validate_rca_json(raw_text: str, max_line: int | None = None) -> dict[str, Any]:
     """
     Parses model response, stripping markdown fences, and strictly validates
     the LogSage RCA response schema.
@@ -403,15 +426,34 @@ def _parse_and_validate_rca_json(raw_text: str) -> dict[str, Any]:
         candidate = fenced.group(1)
 
     parsed = json.loads(candidate)
+    if not isinstance(parsed, dict):
+        raise ValueError("RCA response must be an object")
+    if (
+        not parsed.get("root_cause")
+        or not isinstance(parsed.get("suggested_fix"), str)
+        or not parsed["suggested_fix"].strip()
+    ):
+        raise ValueError("RCA response is incomplete")
 
+    root = parsed.get("root_cause")
+    if (
+        not isinstance(root, (str, list))
+        or isinstance(root, list)
+        and any(not isinstance(item, str) for item in root)
+    ):
+        raise ValueError("Invalid root cause type")
+    if not isinstance(parsed.get("evidence", []), (str, list)):
+        raise ValueError("Invalid evidence type")
     conf = parsed.get("confidence", 0.90)
     try:
         conf_float = float(conf)
+        if not math.isfinite(conf_float):
+            raise ValueError("Non-finite confidence")
         if conf_float > 1.0:
             conf_float = conf_float / 100.0
         conf_float = max(0.0, min(1.0, round(conf_float, 2)))
     except (ValueError, TypeError):
-        conf_float = 0.90
+        raise ValueError("Invalid RCA confidence")
 
     rc = parsed.get("root_cause")
     if isinstance(rc, str):
@@ -420,6 +462,9 @@ def _parse_and_validate_rca_json(raw_text: str) -> dict[str, Any]:
         root_cause_list = [str(item).strip() for item in rc if str(item).strip()]
     else:
         root_cause_list = ["Identified root cause in workflow step execution."]
+
+    if not root_cause_list or any(not item for item in root_cause_list):
+        raise ValueError("Empty root cause")
 
     ev = parsed.get("evidence")
     if isinstance(ev, str):
@@ -437,13 +482,27 @@ def _parse_and_validate_rca_json(raw_text: str) -> dict[str, Any]:
     for item in log_an:
         if isinstance(item, dict):
             error_logs = item.get("error_logs", [])
+            if not isinstance(error_logs, list) or any(
+                not isinstance(pair, list)
+                or len(pair) != 2
+                or any(type(n) is not int for n in pair)
+                or pair[0] < 1
+                or pair[1] < pair[0]
+                or (max_line is not None and pair[1] > max_line)
+                for pair in error_logs
+            ):
+                raise ValueError("Invalid evidence line range")
             analysis_str = str(item.get("analysis", ""))
-            normalized_log_analysis.append({
-                "error_logs": error_logs,
-                "analysis": analysis_str,
-            })
+            normalized_log_analysis.append(
+                {
+                    "error_logs": error_logs,
+                    "analysis": analysis_str,
+                }
+            )
 
-    suggested_fix = str(parsed.get("suggested_fix") or "Inspect failed step logs and reproduce locally.")
+    suggested_fix = str(
+        parsed.get("suggested_fix") or "Inspect failed step logs and reproduce locally."
+    )
 
     return {
         "log_analysis": normalized_log_analysis,
@@ -487,41 +546,35 @@ async def run_rca(
         evidence_graph=evidence_graph,
     )
 
-    candidate_models = [settings.GEMINI_MODEL, "gemini-flash-lite-latest", "gemini-3-flash-preview"]
-    # De-duplicate while preserving order
-    seen_models = set()
-    models_to_try = []
-    for m in candidate_models:
-        if m and m not in seen_models:
-            seen_models.add(m)
-            models_to_try.append(m)
-
     from google import genai
     from google.genai import types
 
-    client = genai.Client(api_key=settings.GEMINI_API_KEY)
-    config = types.GenerateContentConfig(
-        temperature=0.0,
-        response_mime_type="application/json",
+    client = genai.Client(
+        api_key=settings.GEMINI_API_KEY,
+        http_options={"timeout": settings.AI_TIMEOUT_SECONDS * 1000},
     )
-
-    for target_model in models_to_try:
-        try:
-            response = await asyncio.to_thread(
-                client.models.generate_content,
-                model=target_model,
-                contents=prompt,
-                config=config,
+    try:
+        async with client.aio as async_client:
+            response = await asyncio.wait_for(
+                async_client.models.generate_content(
+                    model=settings.GEMINI_MODEL,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        temperature=0.0, response_mime_type="application/json"
+                    ),
+                ),
+                timeout=settings.AI_TIMEOUT_SECONDS,
             )
-            text = response.text or ""
-            if text.strip():
-                result = _parse_and_validate_rca_json(text)
-                return result
-        except Exception as exc:
-            logger.warning("RCA LLM call with model %s failed: %s. Trying next option.", target_model, exc)
-
-    logger.warning("All candidate models failed or returned empty; using fine-tuned heuristic fallback.")
-    return _heuristic_fallback(structured_failure, important_blocks)
+        result = _parse_and_validate_rca_json(
+            response.text or "", (evidence_graph or {}).get("line_count")
+        )
+        result["model"] = settings.GEMINI_MODEL
+        return result
+    except Exception:
+        logger.warning(
+            "Configured RCA provider unavailable; using deterministic fallback", exc_info=True
+        )
+        return _heuristic_fallback(structured_failure, important_blocks)
 
 
 async def run_groq_rca(
@@ -545,8 +598,15 @@ async def run_groq_rca(
         }
 
     prompt = _build_rca_prompt(
-        workflow_name, failed_step, commit_sha, branch, structured_failure,
-        important_blocks, differences, historical_precedents, evidence_graph,
+        workflow_name,
+        failed_step,
+        commit_sha,
+        branch,
+        structured_failure,
+        important_blocks,
+        differences,
+        historical_precedents,
+        evidence_graph,
     )
     request_payload = {
         "model": settings.GROQ_MODEL,
@@ -558,7 +618,10 @@ async def run_groq_rca(
         ],
     }
     try:
-        async with httpx.AsyncClient(timeout=90.0) as client:
+        async with (
+            asyncio.timeout(settings.AI_TIMEOUT_SECONDS),
+            httpx.AsyncClient(timeout=settings.AI_TIMEOUT_SECONDS) as client,
+        ):
             response = await client.post(
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers={"Authorization": f"Bearer {settings.GROQ_API_KEY}"},
@@ -580,7 +643,7 @@ async def run_groq_rca(
             content = message.get("content") if isinstance(message, dict) else None
             if not isinstance(content, str) or not content.strip():
                 raise ValueError("Groq returned an empty completion")
-            result = _parse_and_validate_rca_json(content)
+            result = _parse_and_validate_rca_json(content, (evidence_graph or {}).get("line_count"))
             result["model"] = settings.GROQ_MODEL
             return result
     except httpx.HTTPStatusError as exc:
@@ -593,7 +656,7 @@ async def run_groq_rca(
             **_heuristic_fallback(structured_failure, important_blocks),
             "analysis_status": "failed",
             "model": settings.GROQ_MODEL,
-            "error": f"Groq Cloud HTTP {exc.response.status_code}: {exc.response.text[:240]}",
+            "error": f"Groq Cloud HTTP {exc.response.status_code}",
         }
     except Exception as exc:
         logger.warning("Groq RCA request failed: %s", exc)
@@ -601,5 +664,5 @@ async def run_groq_rca(
             **_heuristic_fallback(structured_failure, important_blocks),
             "analysis_status": "failed",
             "model": settings.GROQ_MODEL,
-            "error": f"Groq analysis failed: {str(exc)[:240]}",
+            "error": "Groq analysis failed. Retry analysis to try again.",
         }

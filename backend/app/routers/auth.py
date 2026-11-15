@@ -1,14 +1,18 @@
 import secrets
-from urllib.parse import urlencode
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from urllib.parse import urlencode, urlsplit
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
-from jose import JWTError, jwt
+import jwt
+from jwt import InvalidTokenError as JWTError
 from sqlalchemy.orm import Session
 
+from app.services.github import github_client
 from app.config import settings
-from app.db.database import get_db
+from app.db.database import get_db, isolated_db
 from app.db.models import User
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -17,7 +21,28 @@ OAUTH_STATE_COOKIE = "flowforge_oauth_state"
 
 
 def _session_token(user_id: int) -> str:
-    return jwt.encode({"sub": str(user_id)}, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    now = datetime.now(timezone.utc)
+    return jwt.encode(
+        {
+            "sub": str(user_id),
+            "iat": now,
+            "exp": now + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
+        },
+        settings.SECRET_KEY,
+        algorithm=settings.ALGORITHM,
+    )
+
+
+@dataclass(frozen=True)
+class Principal:
+    id: int
+    github_id: str
+    username: str
+    name: str | None
+    email: str | None
+    avatar_url: str | None
+    github_url: str | None
+    access_token: str | None
 
 
 def _oauth_configured() -> bool:
@@ -39,25 +64,55 @@ def _oauth_redirect(error: str) -> RedirectResponse:
     return redirect
 
 
-def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
+@isolated_db
+def get_current_user(request: Request, db: Session = Depends(get_db)) -> Principal:
     token = request.cookies.get(SESSION_COOKIE)
     if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
     try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        payload = jwt.decode(
+            token,
+            settings.SECRET_KEY,
+            algorithms=[settings.ALGORITHM],
+            options={"require": ["exp", "iat", "sub"]},
+        )
         user_id = int(payload["sub"])
-    except (JWTError, KeyError, ValueError) as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid session") from exc
+    except (JWTError, KeyError, ValueError, TypeError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid session"
+        ) from exc
 
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
-    return user
+    if not user.access_token:
+        raise HTTPException(401, "GitHub authorization has expired")
+    return Principal(**{field: getattr(user, field) for field in Principal.__dataclass_fields__})
 
 
 @router.get("/github/login")
-def github_login() -> RedirectResponse:
+def github_login(request: Request) -> RedirectResponse:
+    # OAuth state cookies are scoped to host names, not ports. Normalize local
+    # aliases before setting the cookie so the configured callback receives it.
+    frontend = urlsplit(settings.FRONTEND_URL)
+    callback = urlsplit(settings.GITHUB_REDIRECT_URI)
+    local_hosts = {"localhost", "127.0.0.1", "::1"}
+    request_host = request.url.hostname
+    if request.client and request.client.host in local_hosts:
+        forwarded_host = request.headers.get("x-forwarded-host")
+        if forwarded_host:
+            request_host = urlsplit(f"//{forwarded_host.split(',', 1)[0].strip()}").hostname
+    if (
+        request_host in local_hosts
+        and frontend.hostname in local_hosts
+        and callback.hostname == frontend.hostname
+        and request_host != frontend.hostname
+    ):
+        return RedirectResponse(
+            f"{settings.FRONTEND_URL.rstrip('/')}{settings.API_V1_STR}/auth/github/login",
+            status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+        )
     if not _oauth_configured():
         return _oauth_redirect("unavailable")
 
@@ -84,7 +139,8 @@ def github_login() -> RedirectResponse:
 
 
 @router.get("/github/callback")
-async def github_callback(
+@isolated_db
+def github_callback(
     request: Request,
     code: str | None = None,
     state: str | None = None,
@@ -104,8 +160,8 @@ async def github_callback(
         return _oauth_redirect("unavailable")
 
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            token_response = await client.post(
+        with github_client(timeout=15) as client:
+            token_response = client.post(
                 "https://github.com/login/oauth/access_token",
                 data={
                     "client_id": settings.GITHUB_CLIENT_ID,
@@ -126,7 +182,7 @@ async def github_callback(
                 "Authorization": f"Bearer {access_token}",
                 "X-GitHub-Api-Version": "2022-11-28",
             }
-            user_response = await client.get("https://api.github.com/user", headers=github_headers)
+            user_response = client.get("https://api.github.com/user", headers=github_headers)
             user_response.raise_for_status()
             account = user_response.json()
     except (httpx.HTTPError, ValueError):
@@ -160,25 +216,28 @@ async def github_callback(
         httponly=True,
         secure=settings.FRONTEND_URL.startswith("https://"),
         samesite="lax",
-        max_age=60 * 60 * 24 * 7,
+        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
     redirect.delete_cookie(OAUTH_STATE_COOKIE)
     return redirect
 
 
 @router.get("/me")
-async def current_user(
+@isolated_db
+def current_user(
     response: Response,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     if not user.access_token:
         response.delete_cookie(SESSION_COOKIE)
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="GitHub authorization has expired")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="GitHub authorization has expired"
+        )
 
     try:
-        async with httpx.AsyncClient(timeout=4) as client:
-            gh_res = await client.get(
+        with github_client(timeout=4) as client:
+            gh_res = client.get(
                 "https://api.github.com/user",
                 headers={
                     "Accept": "application/vnd.github+json",
@@ -187,10 +246,13 @@ async def current_user(
                 },
             )
             if gh_res.status_code == 401:
-                user.access_token = None
+                db.get(User, user.id).access_token = None
                 db.commit()
                 response.delete_cookie(SESSION_COOKIE)
-                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="GitHub authorization has expired")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="GitHub authorization has expired",
+                )
     except httpx.HTTPError:
         pass
 
